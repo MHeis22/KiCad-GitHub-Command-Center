@@ -184,7 +184,7 @@ class DiffWindow:
 
                     <div class="view-toggle" id="view-toggles">
                         <button class="view-btn active" id="tab-visual" onclick="switchTab('visual')">Visual View</button>
-                        <button class="view-btn" id="tab-health" onclick="switchTab('health')">Design Health</button>
+                        <button class="view-btn" id="tab-health" onclick="switchTab('health')">DRC Violations</button>
                         <button class="view-btn" id="tab-todos" onclick="switchTab('todos')">TODOs</button>
                         <button class="view-btn" id="tab-netlist" onclick="switchTab('netlist')">Logic (Netlist)</button>
                         <button class="view-btn" id="tab-bom" onclick="switchTab('bom')">BOM Diff</button>
@@ -462,6 +462,8 @@ class DiffWindow:
 
             document.getElementById('tab-netlist').classList.toggle('hidden', !isSch);
             document.getElementById('tab-bom').classList.toggle('hidden', !isSch);
+            // Hide DRC Violations tab for Schematics
+            document.getElementById('tab-health').classList.toggle('hidden', isSch);
 
             noSelectionEl.classList.add('hidden');
             noOldMsgEl.classList.add('hidden');
@@ -482,7 +484,7 @@ class DiffWindow:
                 return;
             }}
             
-            // --- Health (DRC/ERC) ---
+            // --- DRC Violations ---
             if (currentTab === 'health') {{
                 btnToggleDiff.classList.add('hidden'); btnToggleOverlay.classList.add('hidden'); btnToggleSwipe.classList.add('hidden'); resetBtn.classList.add('hidden');
                 healthContainer.classList.remove('hidden');
@@ -491,7 +493,7 @@ class DiffWindow:
                 
                 let emptyChecksMsg = "";
                 if (health.new.length === 0 && health.resolved.length === 0 && health.unresolved.length === 0) {{
-                    emptyChecksMsg = "<div style='padding:15px; background:rgba(255,152,0,0.1); border:1px solid #FF9800; border-radius:4px; margin-bottom:15px;'><strong>Note:</strong> No violations detected, OR the <i>'Run DRC/ERC Checks'</i> box was not checked before generating this view.</div>";
+                    emptyChecksMsg = "<div style='padding:15px; background:rgba(255,152,0,0.1); border:1px solid #FF9800; border-radius:4px; margin-bottom:15px;'><strong>Note:</strong> No violations detected, OR the <i>'Run DRC Check'</i> box was not checked before generating this view.</div>";
                 }}
 
                 let html = emptyChecksMsg + '<div class="todos-wrapper">';
@@ -516,7 +518,7 @@ class DiffWindow:
 
                 html += '</div>';
                 healthContainer.innerHTML = html;
-                statusTextEl.innerHTML = `Showing: <strong>Design Health (DRC/ERC)</strong>`;
+                statusTextEl.innerHTML = `Showing: <strong>DRC Violations</strong>`;
                 return;
             }}
 

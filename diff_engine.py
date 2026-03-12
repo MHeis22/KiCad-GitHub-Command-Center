@@ -129,7 +129,7 @@ class DiffEngine:
         return " - ".join(formatted)
 
     def _run_rule_check(self, file_path, is_pcb):
-        """Runs DRC/ERC, parses JSON to extract clean rule violations."""
+        """Runs DRC, parses JSON to extract clean rule violations."""
         if not file_path or not os.path.exists(file_path):
             return []
         
@@ -142,8 +142,7 @@ class DiffEngine:
             except: pass
             
         try:
-            cmd = [self.kicad_cli, "pcb" if is_pcb else "sch", "drc" if is_pcb else "erc", 
-                   "--format", "json", "--output", out_json, file_path]
+            cmd = [self.kicad_cli, "pcb", "drc", "--format", "json", "--output", out_json, file_path]
             
             subprocess.run(cmd, capture_output=True, cwd=self.project_dir, creationflags=CREATE_NO_WINDOW)
             
@@ -204,9 +203,9 @@ class DiffEngine:
                 
         return out_path
 
-    def render_all_diffs(self, show_unchanged=False, compare_target="HEAD", run_drc_erc=False):
+    def render_all_diffs(self, show_unchanged=False, compare_target="HEAD", run_drc=False):
         """
-        Scans for .kicad_pcb and .kicad_sch. Exports visual, logical files, and optionally DRC/ERC.
+        Scans for .kicad_pcb and .kicad_sch. Exports visual, logical files, and optionally DRC.
         """
         actual_target = compare_target.split(' ')[0] if ' ' in compare_target else compare_target
         git_status = self.get_git_status(target=actual_target)
@@ -335,8 +334,8 @@ class DiffEngine:
                 curr_todos = self._extract_todos(file_path) if status_text != "Deleted" else []
                 old_todos = self._extract_todos(old_board_tmp) if has_old else []
                 
-                # 5. Extract Health (DRC/ERC)
-                if run_drc_erc:
+                # 5. Extract Health (DRC)
+                if run_drc:
                     curr_health = self._run_rule_check(file_path, is_pcb) if status_text != "Deleted" else []
                     old_health = self._run_rule_check(old_board_tmp, is_pcb) if has_old else []
                     

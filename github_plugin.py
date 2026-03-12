@@ -80,9 +80,9 @@ class CommandCenterDialog(wx.Dialog):
         target_sizer.Add(self.cb_targets, proportion=1, flag=wx.EXPAND)
         main_vbox.Add(target_sizer, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=10)
         
-        # --- DRC / ERC Checkbox ---
-        self.cb_drc = wx.CheckBox(panel, label="Run DRC / ERC Checks (May take longer)")
-        self.cb_drc.SetToolTip("Executes KiCad's electrical and design rules checkers and compares violations.")
+        # --- DRC ---
+        self.cb_drc = wx.CheckBox(panel, label="Run DRC Checks (Shows DRC violations as diffs)")
+        self.cb_drc.SetToolTip("Executes KiCad's design rules checker and compares violations.")
         self.cb_drc.SetValue(False) # Off by default to keep viewing snappy
         main_vbox.Add(self.cb_drc, flag=wx.LEFT | wx.RIGHT | wx.BOTTOM, border=15)
 
@@ -254,7 +254,7 @@ class CommandCenterDialog(wx.Dialog):
             selected_target = self.cb_targets.GetStringSelection()
             run_checks = self.cb_drc.GetValue()
             
-            diffs, summary = self.engine.render_all_diffs(show_unchanged=False, compare_target=selected_target, run_drc_erc=run_checks)
+            diffs, summary = self.engine.render_all_diffs(show_unchanged=False, compare_target=selected_target, run_drc=run_checks)
             if not diffs:
                 wx.MessageBox(f"No local changes detected against {selected_target}.", "Info")
             else:
