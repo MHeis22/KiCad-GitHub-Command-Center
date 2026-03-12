@@ -8,7 +8,7 @@ class DiffWindow:
     def __init__(self, diffs, summary_text):
         """
         diffs expects a list of dicts: 
-        [{'name': '...', 'status': '...', 'visuals': {'LayerName': {'curr': '...', 'old': '...'}}, 'netlist_diff': '...', 'bom_diff': '...'}]
+        [{'name': '...', 'status': '...', 'visuals': {'LayerName': {'curr': '...', 'old': '...'}}, 'netlist_diff': '...', 'bom_diff': '...', 'todos': {'curr': [], 'old': []}}]
         """
         self.diffs = diffs
         self.summary_text = summary_text.replace('\n', '<br>')
@@ -38,7 +38,8 @@ class DiffWindow:
                 "status": d.get('status', 'Unknown'),
                 "visuals": processed_visuals,
                 "netlistDiff": d.get('netlist_diff', ''),
-                "bomDiff": d.get('bom_diff', '')
+                "bomDiff": d.get('bom_diff', ''),
+                "todos": d.get('todos', {'curr': [], 'old': []})
             })
 
         diff_json = json.dumps(js_diffs)
@@ -134,9 +135,19 @@ class DiffWindow:
             filter: brightness(1.1) contrast(1.2); /* Make silk even sharper */
         }}
 
-        /* Text Diff Viewer */
-        #text-diff-container {{ flex: 1; padding: 20px; overflow-y: auto; background: #1e1e1e; font-family: 'Consolas', 'Courier New', monospace; font-size: 13px; white-space: pre-wrap; line-height: 1.5; }}
+        /* Text Diff Viewer & TODOs */
+        #text-diff-container, #todos-container {{ flex: 1; padding: 20px; overflow-y: auto; background: #1e1e1e; font-family: 'Consolas', 'Courier New', monospace; font-size: 13px; white-space: pre-wrap; line-height: 1.5; }}
         .diff-line {{ padding: 0 5px; border-radius: 2px; }}
+
+        /* TODO List Styles */
+        .todos-wrapper {{ display: flex; gap: 20px; height: 100%; }}
+        .todos-column {{ flex: 1; display: flex; flex-direction: column; background: #252526; border-radius: 6px; border: 1px solid #333; }}
+        .todos-header {{ padding: 12px 15px; background: #2d2d30; border-bottom: 1px solid #3e3e42; font-weight: bold; font-size: 14px; border-radius: 6px 6px 0 0; }}
+        .todo-list {{ list-style: none; padding: 15px; margin: 0; overflow-y: auto; flex: 1; }}
+        .todo-item {{ padding: 12px 15px; margin-bottom: 10px; border-radius: 4px; background: #2d2d30; border-left: 4px solid #444; font-family: 'Segoe UI', sans-serif; box-shadow: 0 2px 4px rgba(0,0,0,0.2); }}
+        .todo-item.todo-new {{ border-left-color: #4CAF50; }}
+        .todo-item.todo-old {{ border-left-color: #FF9800; }}
+        .todo-empty {{ color: #888; font-style: italic; padding: 10px 0; }}
 
         /* Pan & Zoom Wrapper for SVGs */
         #img-wrapper {{ width: 100%; height: 100%; display: flex; justify-content: center; align-items: center; transform-origin: 0 0; cursor: grab; position: relative; }}
@@ -176,6 +187,7 @@ class DiffWindow:
 
                     <div class="view-toggle" id="view-toggles">
                         <button class="view-btn active" id="tab-visual" onclick="switchTab('visual')">Visual View</button>
+                        <button class="view-btn" id="tab-todos" onclick="switchTab('todos')">TODOs</button>
                         <button class="view-btn" id="tab-netlist" onclick="switchTab('netlist')">Logic (Netlist)</button>
                         <button class="view-btn" id="tab-bom" onclick="switchTab('bom')">BOM Diff</button>
                     </div>
@@ -210,7 +222,11 @@ class DiffWindow:
         </div>
         
         <div id="text-diff-container" class="hidden">
-            <!-- Populated by JS -->
+            <!-- Populated by JS for netlist/bom -->
+        </div>
+
+        <div id="todos-container" class="hidden">
+            <!-- Populated by JS for TODOs -->
         </div>
     </div>
 
@@ -246,6 +262,7 @@ class DiffWindow:
         
         const viewerContainer = document.getElementById('viewer-container');
         const textDiffContainer = document.getElementById('text-diff-container');
+        const todosContainer = document.getElementById('todos-container');
         const viewToggles = document.getElementById('view-toggles');
         const btnToggleDiff = document.getElementById('btn-toggle-diff');
         const btnToggleOverlay = document.getElementById('btn-toggle-overlay');
@@ -294,11 +311,15 @@ class DiffWindow:
             setTransform();
         }};
 
-        // --- Text Diff Formatter ---
+        // --- Text/Data Formatters ---
+        function escapeHtml(unsafe) {{
+            return unsafe.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        }}
+
         function formatDiff(diffText) {{
             if (!diffText || diffText.trim() === '') return '';
             return diffText.split('\\n').map(line => {{
-                let safeLine = line.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                let safeLine = escapeHtml(line);
                 if (safeLine.startsWith('+++') || safeLine.startsWith('---')) {{
                     return `<div class="diff-line" style="color: #999; font-weight: bold; margin-top: 10px;">${{safeLine}}</div>`;
                 }}
@@ -327,7 +348,7 @@ class DiffWindow:
                 else if (file.status === "New/Untracked") color = "#4CAF50";
 
                 li.innerHTML = `
-                    <div class="file-name">${{file.name}}</div>
+                    <div class="file-name">${{escapeHtml(file.name)}}</div>
                     <div class="file-status" style="color: ${{color}};">${{file.status}}</div>
                 `;
                 fileListEl.appendChild(li);
@@ -390,6 +411,7 @@ class DiffWindow:
         function switchTab(tab) {{
             currentTab = tab;
             document.getElementById('tab-visual').classList.toggle('active', tab === 'visual');
+            document.getElementById('tab-todos').classList.toggle('active', tab === 'todos');
             document.getElementById('tab-netlist').classList.toggle('active', tab === 'netlist');
             document.getElementById('tab-bom').classList.toggle('active', tab === 'bom');
             renderView();
@@ -409,27 +431,68 @@ class DiffWindow:
             }}
             const silkVisual = silkLayer ? file.visuals[silkLayer] : null;
 
-            // Show tabs only for Schematics
-            viewToggles.classList.toggle('hidden', !isSch);
+            // Show sch-specific tabs only for Schematics (netlist/bom), but TODOs for both!
+            document.getElementById('tab-netlist').classList.toggle('hidden', !isSch);
+            document.getElementById('tab-bom').classList.toggle('hidden', !isSch);
 
             noSelectionEl.classList.add('hidden');
             noOldMsgEl.classList.add('hidden');
+            
+            // Reset visibility
+            viewerContainer.classList.add('hidden');
+            textDiffContainer.classList.add('hidden');
+            todosContainer.classList.add('hidden');
 
-            // Handle Logical Text Views
-            if (currentTab !== 'visual') {{
-                viewerContainer.classList.add('hidden');
+            // Handle Logic Text Views (Netlist / BOM)
+            if (currentTab === 'netlist' || currentTab === 'bom') {{
                 btnToggleDiff.classList.add('hidden');
                 btnToggleOverlay.classList.add('hidden');
                 resetBtn.classList.add('hidden');
                 textDiffContainer.classList.remove('hidden');
+                
                 const diffContent = currentTab === 'netlist' ? file.netlistDiff : file.bomDiff;
                 textDiffContainer.innerHTML = diffContent ? formatDiff(diffContent) : `<span style="color:#888;">No logic changes found.</span>`;
                 statusTextEl.innerHTML = `Showing: <strong>${{currentTab === 'netlist' ? 'Netlist Text Diff' : 'BOM Text Diff'}}</strong>`;
                 return;
             }}
+            
+            // Handle TODOs View
+            if (currentTab === 'todos') {{
+                btnToggleDiff.classList.add('hidden');
+                btnToggleOverlay.classList.add('hidden');
+                resetBtn.classList.add('hidden');
+                todosContainer.classList.remove('hidden');
+                
+                const todos = file.todos || {{curr: [], old: []}};
+                
+                let html = '<div class="todos-wrapper">';
+                
+                // Old TODOs Column
+                html += '<div class="todos-column"><div class="todos-header" style="color:#FF9800;">Previous TODOs</div><ul class="todo-list">';
+                if (!todos.old || todos.old.length === 0) {{
+                    html += '<li class="todo-empty">No TODOs found in the previous commit.</li>';
+                }} else {{
+                    todos.old.forEach(t => html += `<li class="todo-item todo-old">${{escapeHtml(t)}}</li>`);
+                }}
+                html += '</ul></div>';
 
-            // Handle Visual View
-            textDiffContainer.classList.add('hidden');
+                // Current TODOs Column
+                html += '<div class="todos-column"><div class="todos-header" style="color:#4CAF50;">Current TODOs</div><ul class="todo-list">';
+                if (!todos.curr || todos.curr.length === 0) {{
+                    html += '<li class="todo-empty">No TODOs found in the working tree.</li>';
+                }} else {{
+                    todos.curr.forEach(t => html += `<li class="todo-item todo-new">${{escapeHtml(t)}}</li>`);
+                }}
+                html += '</ul></div>';
+                
+                html += '</div>';
+
+                todosContainer.innerHTML = html;
+                statusTextEl.innerHTML = `Showing: <strong>Design TODOs</strong>`;
+                return;
+            }}
+
+            // --- Handle Visual View ---
             viewerContainer.classList.remove('hidden');
             
             if (visual.old && visual.curr) {{

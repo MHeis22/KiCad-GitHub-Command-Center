@@ -68,6 +68,30 @@ class DiffEngine:
         except Exception as e:
             return f"Error generating text diff: {e}"
 
+    def _extract_todos(self, file_path):
+        """Extract TODOs from KiCad schematic or PCB files."""
+        if not file_path or not os.path.exists(file_path):
+            return []
+        try:
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read()
+            # Find anything inside double quotes containing "TODO" (case-insensitive)
+            # This captures labels/texts like: (text "TODO: swap to the stm32 MCU" (at ...))
+            todos = re.findall(r'"([^"]*TODO[^"]*)"', content, re.IGNORECASE)
+            
+            # Clean up whitespace and remove duplicates while preserving order
+            seen = set()
+            result = []
+            for t in todos:
+                clean_t = t.strip()
+                # Ignore empty strings or single newline breaks
+                if clean_t and clean_t not in seen:
+                    seen.add(clean_t)
+                    result.append(clean_t)
+            return result
+        except Exception as e:
+            return [f"Error extracting TODOs: {e}"]
+
     def render_all_diffs(self, show_unchanged=False, compare_target="HEAD"):
         """
         Scans for .kicad_pcb and .kicad_sch. Exports visual and logical files.
@@ -165,12 +189,22 @@ class DiffEngine:
                         netlist_diff = self._generate_text_diff(old_net, curr_net)
                         bom_diff = self._generate_text_diff(old_bom, curr_bom)
 
+                # 4. Extract TODOs
+                curr_todos = self._extract_todos(file_path)
+                old_todos = []
+                if has_old:
+                    old_todos = self._extract_todos(old_board_tmp)
+
                 diffs.append({
                     "name": fname,
                     "status": status_text,
                     "visuals": visuals,
                     "netlist_diff": netlist_diff,
-                    "bom_diff": bom_diff
+                    "bom_diff": bom_diff,
+                    "todos": {
+                        "curr": curr_todos,
+                        "old": old_todos
+                    }
                 })
                 
             except Exception as e:
