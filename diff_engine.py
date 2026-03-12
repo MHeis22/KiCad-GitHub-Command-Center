@@ -26,26 +26,22 @@ class DiffEngine:
         status_dict = {}
         try:
             # 1. Compare working tree to the specific target commit/branch
-            # This captures Modified (M), Deleted (D), and Added (A) relative to that target.
-            # Using 'git diff' instead of 'status' allows us to see changes relative to any point in history.
             res = subprocess.run([self.git_cmd, "-C", self.project_dir, "diff", target, "--name-status"], 
                                  capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
             for line in res.stdout.split('\n'):
                 if line.strip():
-                    # Format: STATUS\tPATH
                     parts = line.split('\t')
                     if len(parts) >= 2:
                         code = parts[0].strip()
                         fname = parts[1].strip().strip('"')
                         status_dict[fname] = code
 
-            # 2. Also catch untracked files (??) which are not shown by 'git diff'
+            # 2. Catch untracked files
             res_untracked = subprocess.run([self.git_cmd, "-C", self.project_dir, "status", "--porcelain"], 
                                  capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
             for line in res_untracked.stdout.split('\n'):
                 if line.startswith('??'):
                     fname = line[3:].strip().strip('"')
-                    # Only add if not already tracked/modified
                     if fname not in status_dict:
                         status_dict[fname] = '??'
         except Exception:
@@ -54,9 +50,8 @@ class DiffEngine:
 
     def get_git_targets(self):
         """Returns a list of local branches and recent commits for comparison."""
-        targets = ["HEAD"] # Default comparison target
+        targets = ["HEAD"]
         try:
-            # Get local branches
             res = subprocess.run([self.git_cmd, "-C", self.project_dir, "branch", "--format=%(refname:short)"], 
                                  capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
             for line in res.stdout.split('\n'):
@@ -64,7 +59,6 @@ class DiffEngine:
                 if target and target not in targets:
                     targets.append(target)
             
-            # Get last 10 commits with abbreviated hash and subject
             res = subprocess.run([self.git_cmd, "-C", self.project_dir, "log", "-n", "10", "--format=%h (%s)"], 
                                  capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
             for line in res.stdout.split('\n'):
@@ -83,18 +77,15 @@ class DiffEngine:
             
         try:
             with open(pcb_file, 'r', encoding='utf-8', errors='ignore') as f:
-                content = f.read(10000) # Only need the header
-                # Find (layers ...) section and extract (0 "F.Cu" signal) etc.
+                content = f.read(10000)
                 matches = re.findall(r'\(\d+\s+"([^"]+)"\s+signal\)', content)
                 if matches:
-                    # Replace default copper with actual found copper layers
                     layers = matches + ["F.Silkscreen", "B.Silkscreen", "Edge.Cuts"]
         except:
             pass
         return layers
 
     def _generate_text_diff(self, old_file, new_file):
-        """Helper to generate a unified diff from two text files (like Netlists or BOMs)"""
         if not old_file or not new_file or not os.path.exists(old_file) or not os.path.exists(new_file):
             return ""
         try:
@@ -109,16 +100,13 @@ class DiffEngine:
             return f"Error generating text diff: {e}"
 
     def _extract_todos(self, file_path):
-        """Extract TODOs from KiCad schematic or PCB files."""
         if not file_path or not os.path.exists(file_path):
             return []
         try:
             with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
                 content = f.read()
-            # Find anything inside double quotes containing "TODO" (case-insensitive)
             todos = re.findall(r'"([^"]*TODO[^"]*)"', content, re.IGNORECASE)
             
-            # Clean up whitespace and remove duplicates while preserving order
             seen = set()
             result = []
             for t in todos:
@@ -130,13 +118,79 @@ class DiffEngine:
         except Exception as e:
             return [f"Error extracting TODOs: {e}"]
 
+    def _format_violation_items(self, items):
+        """Helper to extract clean descriptions from KiCad JSON item dictionaries."""
+        formatted = []
+        for i in items:
+            if isinstance(i, dict) and "description" in i:
+                formatted.append(str(i["description"]))
+            else:
+                formatted.append(str(i))
+        return " - ".join(formatted)
+
+    def _run_rule_check(self, file_path, is_pcb):
+        """Runs DRC/ERC, parses JSON to extract clean rule violations."""
+        if not file_path or not os.path.exists(file_path):
+            return []
+        
+        safe_name = os.path.basename(file_path).replace(' ', '_')
+        out_json = os.path.join(self.tmp_dir, f"report_{safe_name}.json")
+        
+        # Clean up previous run
+        if os.path.exists(out_json):
+            try: os.remove(out_json)
+            except: pass
+            
+        try:
+            cmd = [self.kicad_cli, "pcb" if is_pcb else "sch", "drc" if is_pcb else "erc", 
+                   "--format", "json", "--output", out_json, file_path]
+            
+            subprocess.run(cmd, capture_output=True, cwd=self.project_dir, creationflags=CREATE_NO_WINDOW)
+            
+            if os.path.exists(out_json):
+                with open(out_json, 'r', encoding='utf-8', errors='ignore') as f:
+                    content = f.read().strip()
+                
+                # Check if it successfully exported JSON
+                if content.startswith('{'):
+                    import json
+                    data = json.loads(content)
+                    violations = []
+                    
+                    # Process standard violations
+                    for v in data.get("violations", []):
+                        severity = v.get("severity", "warning")
+                        desc = v.get("description", "Unknown violation")
+                        items = v.get("items", [])
+                        if items:
+                            items_str = self._format_violation_items(items)
+                            desc = f"{desc}: {items_str}"
+                        violations.append(f"[{severity.upper()}] {desc}")
+                        
+                    # Process unrouted nets / unconnected items
+                    for u in data.get("unconnected_items", []):
+                        severity = u.get("severity", "error") # Unconnected nets are critical
+                        desc = u.get("description", "Unconnected item")
+                        items = u.get("items", [])
+                        if items:
+                            items_str = self._format_violation_items(items)
+                            desc = f"{desc}: {items_str}"
+                        violations.append(f"[UNCONNECTED] {desc}")
+                        
+                    return violations
+                else:
+                    # Fallback if KiCad generated text instead of JSON (older versions)
+                    lines = [line.strip() for line in content.split('\n') if line.strip() and not line.startswith('**')]
+                    return lines
+        except Exception as e:
+            return [f"Error running check: {e}"]
+        return []
+
     def _find_correct_svg(self, out_path, expected_base_name):
-        """Helper to explicitly find the right SVG sheet, ignoring KiCad subsheets"""
         if os.path.isdir(out_path):
             expected = os.path.join(out_path, f"{expected_base_name}.svg")
             if os.path.exists(expected):
                 return expected
-            # Fallback
             svgs = glob.glob(os.path.join(out_path, "*.svg"))
             return svgs[0] if svgs else out_path
             
@@ -150,17 +204,13 @@ class DiffEngine:
                 
         return out_path
 
-    def render_all_diffs(self, show_unchanged=False, compare_target="HEAD"):
+    def render_all_diffs(self, show_unchanged=False, compare_target="HEAD", run_drc_erc=False):
         """
-        Scans for .kicad_pcb and .kicad_sch. Exports visual and logical files.
+        Scans for .kicad_pcb and .kicad_sch. Exports visual, logical files, and optionally DRC/ERC.
         """
-        # Resolve target to hash if it looks like "h (%s)" from get_git_targets
         actual_target = compare_target.split(' ')[0] if ' ' in compare_target else compare_target
-        
-        # Scoped status check relative to the selected target
         git_status = self.get_git_status(target=actual_target)
         
-        # Find all relevant KiCad files in the project unioned with those changed in git
         all_potential = set()
         for fname in os.listdir(self.project_dir):
             if fname.endswith('.kicad_pcb') or fname.endswith('.kicad_sch'):
@@ -170,7 +220,6 @@ class DiffEngine:
                 all_potential.add(fname)
                 
         target_files = sorted(list(all_potential))
-        
         diffs = []
         summary_lines = []
         
@@ -191,11 +240,9 @@ class DiffEngine:
             is_pcb = fname.endswith('.kicad_pcb')
             base_name = os.path.splitext(fname)[0]
             
-            # Temporary storage for reference board from Git.
             old_board_tmp = os.path.join(self.project_dir, f"tmp_git_old_{fname}")
             old_base_name = f"tmp_git_old_{base_name}"
             
-            # Find the active project file to copy alongside the temp board 
             expected_pro = os.path.join(self.project_dir, f"{base_name}.kicad_pro")
             pro_path = expected_pro if os.path.exists(expected_pro) else None
             if not pro_path:
@@ -206,19 +253,18 @@ class DiffEngine:
             if pro_path:
                 old_pro_tmp = os.path.join(self.project_dir, f"{old_base_name}.kicad_pro")
             
-            # Export Layers Map
-            layers_to_export = ["Default"] # For Schematics
+            layers_to_export = ["Default"]
             if is_pcb:
                 layers_to_export = self._get_pcb_layers(file_path)
             
             visuals = {} 
             netlist_diff = ""
             bom_diff = ""
+            health_data = {"new": [], "resolved": [], "unresolved": []}
 
             try:
-                # 1. Export Git Reference version from the actual target
+                # 1. Export Git Reference version
                 has_old = False
-                # If status is 'A' (Added relative to target), it means the file didn't exist in target
                 if status_code != 'A' and status_code != '??':
                     with open(old_board_tmp, "wb") as f:
                         res = subprocess.run([self.git_cmd, "-C", self.project_dir, "show", f"{actual_target}:{fname}"],
@@ -236,7 +282,6 @@ class DiffEngine:
                     curr_out = os.path.join(self.tmp_dir, f"curr_{safe_name}_{layer_safe}.{ext}")
                     old_out = os.path.join(self.tmp_dir, f"old_{safe_name}_{layer_safe}.{ext}")
                     
-                    # Pre-clean stale files
                     for old_temp in glob.glob(curr_out.replace(".svg", "*.svg")) + glob.glob(old_out.replace(".svg", "*.svg")):
                         try:
                             if os.path.isdir(old_temp): shutil.rmtree(old_temp)
@@ -252,14 +297,12 @@ class DiffEngine:
                     else:
                         cli_args.extend(["--exclude-drawing-sheet"])
                     
-                    # Render Current (if not Deleted)
                     if status_text != "Deleted":
                         subprocess.run(cli_args + [file_path, "--output", curr_out], 
                                        capture_output=True, cwd=self.project_dir, creationflags=CREATE_NO_WINDOW)
                         if not is_pcb:
                             curr_out = self._find_correct_svg(curr_out, base_name)
 
-                    # Render Old (if it exists in target)
                     if has_old:
                         subprocess.run(cli_args + [old_board_tmp, "--output", old_out], 
                                        capture_output=True, cwd=self.project_dir, creationflags=CREATE_NO_WINDOW)
@@ -271,7 +314,7 @@ class DiffEngine:
                         "old": old_out if os.path.exists(old_out) and os.path.getsize(old_out) > 0 and not os.path.isdir(old_out) else None
                     }
 
-                # 3. Handle Logical Diffs (Schematics only)
+                # 3. Handle Logical Diffs
                 if not is_pcb:
                     curr_net = os.path.join(self.tmp_dir, f"curr_{safe_name}.net")
                     curr_bom = os.path.join(self.tmp_dir, f"curr_{safe_name}.csv")
@@ -291,6 +334,20 @@ class DiffEngine:
                 # 4. Extract TODOs
                 curr_todos = self._extract_todos(file_path) if status_text != "Deleted" else []
                 old_todos = self._extract_todos(old_board_tmp) if has_old else []
+                
+                # 5. Extract Health (DRC/ERC)
+                if run_drc_erc:
+                    curr_health = self._run_rule_check(file_path, is_pcb) if status_text != "Deleted" else []
+                    old_health = self._run_rule_check(old_board_tmp, is_pcb) if has_old else []
+                    
+                    old_set = set(old_health)
+                    curr_set = set(curr_health)
+                    
+                    health_data = {
+                        "resolved": sorted(list(old_set - curr_set)),
+                        "new": sorted(list(curr_set - old_set)),
+                        "unresolved": sorted(list(old_set & curr_set))
+                    }
 
                 diffs.append({
                     "name": fname,
@@ -301,7 +358,8 @@ class DiffEngine:
                     "todos": {
                         "curr": curr_todos,
                         "old": old_todos
-                    }
+                    },
+                    "health": health_data
                 })
                 
             except Exception as e:

@@ -8,7 +8,7 @@ class DiffWindow:
     def __init__(self, diffs, summary_text, target_name="HEAD"):
         """
         diffs expects a list of dicts: 
-        [{'name': '...', 'status': '...', 'visuals': {'LayerName': {'curr': '...', 'old': '...'}}, 'netlist_diff': '...', 'bom_diff': '...', 'todos': {'curr': [], 'old': []}}]
+        [{'name': '...', 'status': '...', 'visuals': {...}, 'health': {'new':[], 'resolved':[], 'unresolved':[]}}]
         """
         self.diffs = diffs
         self.summary_text = summary_text.replace('\n', '<br>')
@@ -21,12 +21,10 @@ class DiffWindow:
         js_diffs = []
         for d in self.diffs:
             processed_visuals = {}
-            # Loop through all pre-rendered layers
             for layer, paths in d.get('visuals', {}).items():
                 curr_uri = pathlib.Path(paths['curr']).as_uri() if paths.get('curr') else ""
                 old_uri = pathlib.Path(paths['old']).as_uri() if paths.get('old') else ""
                 
-                # Force multi-page PDFs to only show the first page (for Schematics).
                 if curr_uri and paths.get('curr', '').lower().endswith('.pdf'):
                     curr_uri += "#page=1&navpanes=0&view=FitH"
                 if old_uri and paths.get('old', '').lower().endswith('.pdf'):
@@ -40,7 +38,8 @@ class DiffWindow:
                 "visuals": processed_visuals,
                 "netlistDiff": d.get('netlist_diff', ''),
                 "bomDiff": d.get('bom_diff', ''),
-                "todos": d.get('todos', {'curr': [], 'old': []})
+                "todos": d.get('todos', {'curr': [], 'old': []}),
+                "health": d.get('health', {'new': [], 'resolved': [], 'unresolved': []})
             })
 
         diff_json = json.dumps(js_diffs)
@@ -74,7 +73,6 @@ class DiffWindow:
             --text-muted: #666;
             --bg-hover: #dfdfdf;
             --bg-active: #cce4f7;
-            /* Keep PCB dark so bright KiCad traces are visible */
             --pcb-bg: #0a0a0a; 
             --diff-bg: #fafafa;
             --diff-add: #e6ffed;
@@ -83,7 +81,6 @@ class DiffWindow:
 
         body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: var(--bg-main); color: var(--text-main); margin: 0; display: flex; height: 100vh; overflow: hidden; transition: background 0.3s, color 0.3s; }}
         
-        /* Sidebar Styles */
         #sidebar {{ width: 280px; background: var(--bg-sidebar); border-right: 1px solid var(--border-color); display: flex; flex-direction: column; transition: 0.3s; }}
         .sidebar-header {{ padding: 15px; background: var(--bg-header); border-bottom: 1px solid var(--border-color); font-weight: bold; transition: 0.3s; }}
         .file-list {{ flex: 1; overflow-y: auto; list-style: none; padding: 0; margin: 0; }}
@@ -93,7 +90,6 @@ class DiffWindow:
         .file-name {{ font-weight: bold; margin-bottom: 4px; word-break: break-all; }}
         .file-status {{ font-size: 0.85em; color: var(--text-muted); }}
         
-        /* Main Content Styles */
         #main-content {{ flex: 1; display: flex; flex-direction: column; background: var(--bg-main); transition: 0.3s; }}
         #topbar {{ padding: 15px; background: var(--bg-sidebar); border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; transition: 0.3s; }}
         
@@ -101,7 +97,6 @@ class DiffWindow:
         
         .controls-wrapper {{ display: flex; flex-direction: column; align-items: flex-end; gap: 10px; }}
         
-        /* Selection Controls */
         .selection-row {{ display: flex; align-items: center; gap: 12px; }}
         .layer-selector {{ display: flex; align-items: center; gap: 8px; background: var(--bg-header); padding: 4px 10px; border-radius: 4px; border: 1px solid var(--border-color); font-size: 13px; }}
         select {{ background: var(--bg-main); color: var(--text-main); border: 1px solid var(--border-color); padding: 3px 6px; border-radius: 3px; cursor: pointer; font-size: 13px; }}
@@ -122,80 +117,36 @@ class DiffWindow:
         button.btn-secondary:hover {{ background: #777; }}
         .status-indicator {{ font-size: 14px; color: var(--text-muted); min-width: 220px; text-align: right; }}
         
-        /* Document Viewers */
         #viewer-container {{ flex: 1; display: flex; justify-content: center; align-items: center; padding: 20px; overflow: hidden; position: relative; }}
         
         .viewer-absolute {{ position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; justify-content: center; align-items: center; pointer-events: none; }}
         .img-transform-wrapper {{ width: 100%; height: 100%; display: flex; justify-content: center; align-items: center; transform-origin: 0 0; position: absolute; }}
         
-        .board-viewer {{ 
-            width: 100%; 
-            height: 100%; 
-            border: 1px solid #444; 
-            background: var(--pcb-bg); 
-            border-radius: 4px; 
-            box-shadow: 0 4px 25px rgba(0,0,0,0.8); 
-        }}
-        
+        .board-viewer {{ width: 100%; height: 100%; border: 1px solid #444; background: var(--pcb-bg); border-radius: 4px; box-shadow: 0 4px 25px rgba(0,0,0,0.8); }}
         .pdf-viewer {{ position: absolute; width: calc(100% - 40px); height: calc(100% - 40px); pointer-events: auto; }}
         
-        img.board-viewer {{ 
-            position: absolute; 
-            width: 100%; 
-            height: 100%; 
-            object-fit: contain; 
-            pointer-events: none; 
-            filter: contrast(1.15) saturate(1.2);
-        }} 
-
+        img.board-viewer {{ position: absolute; width: 100%; height: 100%; object-fit: contain; pointer-events: none; filter: contrast(1.15) saturate(1.2); }} 
         .hidden {{ display: none !important; }}
         
-        /* Interactive Swipe Slider */
-        #swipe-slider-handle {{
-            position: absolute; top: 0; bottom: 0; left: 50%; width: 2px;
-            background: #00bcd4; cursor: ew-resize; z-index: 100;
-        }}
-        #swipe-slider-handle::after {{
-            content: '< >'; position: absolute; top: 50%; left: -14px;
-            width: 30px; height: 30px; background: #00bcd4; color: #fff;
-            border-radius: 50%; text-align: center; line-height: 30px;
-            font-weight: bold; transform: translateY(-50%); font-family: sans-serif;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.5); pointer-events: none;
-        }}
+        #swipe-slider-handle {{ position: absolute; top: 0; bottom: 0; left: 50%; width: 2px; background: #00bcd4; cursor: ew-resize; z-index: 100; }}
+        #swipe-slider-handle::after {{ content: '< >'; position: absolute; top: 50%; left: -14px; width: 30px; height: 30px; background: #00bcd4; color: #fff; border-radius: 50%; text-align: center; line-height: 30px; font-weight: bold; transform: translateY(-50%); font-family: sans-serif; box-shadow: 0 2px 5px rgba(0,0,0,0.5); pointer-events: none; }}
+        .overlay-mode {{ opacity: 0.8; background: transparent; mix-blend-mode: screen; z-index: 10; }}
+        .silk-overlay {{ z-index: 20; opacity: 1.0; background: transparent; mix-blend-mode: screen; filter: brightness(1.1) contrast(1.2); }}
 
-        /* The Ghosting/Overlay Effect Class */
-        .overlay-mode {{ 
-            opacity: 0.8; 
-            background: transparent;
-            mix-blend-mode: screen; 
-            z-index: 10; 
-        }}
-        
-        /* Silkscreen Specific styling: Screen blend drops the dark background */
-        .silk-overlay {{ 
-            z-index: 20; 
-            opacity: 1.0; 
-            background: transparent;
-            mix-blend-mode: screen; 
-            filter: brightness(1.1) contrast(1.2); /* Make silk even sharper */
-        }}
-
-        /* Text Diff Viewer & TODOs */
-        #text-diff-container, #todos-container {{ flex: 1; padding: 20px; overflow-y: auto; background: var(--diff-bg); font-family: 'Consolas', 'Courier New', monospace; font-size: 13px; white-space: pre-wrap; line-height: 1.5; transition: 0.3s; }}
+        #text-diff-container, #todos-container, #health-container {{ flex: 1; padding: 20px; overflow-y: auto; background: var(--diff-bg); font-family: 'Consolas', 'Courier New', monospace; font-size: 13px; white-space: pre-wrap; line-height: 1.5; transition: 0.3s; }}
         .diff-line {{ padding: 0 5px; border-radius: 2px; }}
-        
         .diff-header {{ color: var(--text-muted); font-weight: bold; margin-top: 10px; }}
         .diff-add {{ color: #4CAF50; background-color: var(--diff-add); }}
         .diff-del {{ color: #F44336; background-color: var(--diff-del); }}
         .diff-chunk {{ color: #00bcd4; font-weight: bold; }}
         .diff-normal {{ color: var(--text-main); }}
 
-        /* TODO List Styles */
+        /* Reusable Flex Columns (TODOs and Health) */
         .todos-wrapper {{ display: flex; gap: 20px; height: 100%; }}
         .todos-column {{ flex: 1; display: flex; flex-direction: column; background: var(--bg-sidebar); border-radius: 6px; border: 1px solid var(--border-color); transition: 0.3s; }}
         .todos-header {{ padding: 12px 15px; background: var(--bg-header); border-bottom: 1px solid var(--border-color); font-weight: bold; font-size: 14px; border-radius: 6px 6px 0 0; transition: 0.3s; }}
         .todo-list {{ list-style: none; padding: 15px; margin: 0; overflow-y: auto; flex: 1; }}
-        .todo-item {{ padding: 12px 15px; margin-bottom: 10px; border-radius: 4px; background: var(--bg-header); border-left: 4px solid var(--text-muted); font-family: 'Segoe UI', sans-serif; box-shadow: 0 2px 4px rgba(0,0,0,0.2); transition: 0.3s; }}
+        .todo-item {{ padding: 12px 15px; margin-bottom: 10px; border-radius: 4px; background: var(--bg-header); border-left: 4px solid var(--text-muted); font-family: 'Segoe UI', sans-serif; box-shadow: 0 2px 4px rgba(0,0,0,0.2); transition: 0.3s; word-wrap: break-word; white-space: normal; }}
         .todo-item.todo-new {{ border-left-color: #4CAF50; }}
         .todo-item.todo-old {{ border-left-color: #FF9800; }}
         .todo-empty {{ color: var(--text-muted); font-style: italic; padding: 10px 0; }}
@@ -207,9 +158,7 @@ class DiffWindow:
 
     <div id="sidebar">
         <div class="sidebar-header">Project Files</div>
-        <ul class="file-list" id="file-list">
-            <!-- Populated by JS -->
-        </ul>
+        <ul class="file-list" id="file-list"></ul>
     </div>
 
     <div id="main-content">
@@ -230,13 +179,12 @@ class DiffWindow:
 
                     <div id="layer-container" class="layer-selector hidden">
                         <span>Layer:</span>
-                        <select id="layer-dropdown" onchange="changeLayer(this.value)">
-                            <!-- Populated by JS -->
-                        </select>
+                        <select id="layer-dropdown" onchange="changeLayer(this.value)"></select>
                     </div>
 
                     <div class="view-toggle" id="view-toggles">
                         <button class="view-btn active" id="tab-visual" onclick="switchTab('visual')">Visual View</button>
+                        <button class="view-btn" id="tab-health" onclick="switchTab('health')">Design Health</button>
                         <button class="view-btn" id="tab-todos" onclick="switchTab('todos')">TODOs</button>
                         <button class="view-btn" id="tab-netlist" onclick="switchTab('netlist')">Logic (Netlist)</button>
                         <button class="view-btn" id="tab-bom" onclick="switchTab('bom')">BOM Diff</button>
@@ -257,7 +205,6 @@ class DiffWindow:
             <p id="no-selection" class="no-data-msg">No file selected.</p>
             <p id="no-old-msg" class="no-data-msg hidden">No data found in <span class="target-name-val"></span> for this layer.</p>
             
-            <!-- OLD Layer Wrapper -->
             <div id="viewer-wrapper-old" class="viewer-absolute hidden">
                 <div id="img-wrapper-old" class="img-transform-wrapper hidden">
                     <img id="old-img" class="board-viewer hidden" src="" />
@@ -267,7 +214,6 @@ class DiffWindow:
                 <iframe id="old-silk-pdf" class="board-viewer pdf-viewer silk-overlay hidden" src=""></iframe>
             </div>
 
-            <!-- NEW Layer Wrapper -->
             <div id="viewer-wrapper-new" class="viewer-absolute hidden">
                 <div id="img-wrapper-new" class="img-transform-wrapper hidden">
                     <img id="new-img" class="board-viewer hidden" src="" />
@@ -277,17 +223,12 @@ class DiffWindow:
                 <iframe id="new-silk-pdf" class="board-viewer pdf-viewer silk-overlay hidden" src=""></iframe>
             </div>
             
-            <!-- Wipe Slider Handle -->
             <div id="swipe-slider-handle" class="hidden"></div>
         </div>
         
-        <div id="text-diff-container" class="hidden">
-            <!-- Populated by JS for netlist/bom -->
-        </div>
-
-        <div id="todos-container" class="hidden">
-            <!-- Populated by JS for TODOs -->
-        </div>
+        <div id="text-diff-container" class="hidden"></div>
+        <div id="todos-container" class="hidden"></div>
+        <div id="health-container" class="hidden"></div>
     </div>
 
     <script>
@@ -297,14 +238,13 @@ class DiffWindow:
         let showOld = false;
         let overlayMode = false;
         let swipeMode = false;
-        let swipePos = 50; // percentage
+        let swipePos = 50;
         
         let currentTab = 'visual'; 
         let currentLayer = 'Default';
         let showSilk = false;
 
         const fileListEl = document.getElementById('file-list');
-        
         const wrapperOld = document.getElementById('viewer-wrapper-old');
         const wrapperNew = document.getElementById('viewer-wrapper-new');
         const imgWrapperOld = document.getElementById('img-wrapper-old');
@@ -314,7 +254,6 @@ class DiffWindow:
         const oldImgEl = document.getElementById('old-img');
         const newSilkImgEl = document.getElementById('new-silk-img');
         const oldSilkImgEl = document.getElementById('old-silk-img');
-
         const newPdfEl = document.getElementById('new-pdf');
         const oldPdfEl = document.getElementById('old-pdf');
         const newSilkPdfEl = document.getElementById('new-silk-pdf');
@@ -333,19 +272,16 @@ class DiffWindow:
         const viewerContainer = document.getElementById('viewer-container');
         const textDiffContainer = document.getElementById('text-diff-container');
         const todosContainer = document.getElementById('todos-container');
+        const healthContainer = document.getElementById('health-container');
         const viewToggles = document.getElementById('view-toggles');
         
         const btnToggleDiff = document.getElementById('btn-toggle-diff');
         const btnToggleOverlay = document.getElementById('btn-toggle-overlay');
         const btnToggleSwipe = document.getElementById('btn-toggle-swipe');
 
-        // Set dynamic target name labels
         document.querySelectorAll('.target-name-val').forEach(el => el.innerText = targetName);
 
-        // --- Theme Toggle & Save Report ---
-        function toggleTheme() {{
-            document.body.classList.toggle('light-theme');
-        }}
+        function toggleTheme() {{ document.body.classList.toggle('light-theme'); }}
 
         function saveReport() {{
             const docHtml = '<!DOCTYPE html>\\n<html lang="en">' + document.documentElement.innerHTML + '</html>';
@@ -360,7 +296,6 @@ class DiffWindow:
             URL.revokeObjectURL(url);
         }}
 
-        // --- Pan & Zoom & Swipe Slider Logic ---
         let scale = 1, panning = false, pointX = 0, pointY = 0, start = {{ x: 0, y: 0 }};
         let draggingSlider = false;
 
@@ -377,14 +312,10 @@ class DiffWindow:
 
         sliderHandle.addEventListener('mousedown', (e) => {{
             draggingSlider = true;
-            e.stopPropagation();
-            e.preventDefault();
+            e.stopPropagation(); e.preventDefault();
         }});
         
-        window.addEventListener('mouseup', () => {{
-            draggingSlider = false;
-            panning = false;
-        }});
+        window.addEventListener('mouseup', () => {{ draggingSlider = false; panning = false; }});
 
         viewerContainer.onmousedown = function (e) {{
             if (imgWrapperOld.classList.contains('hidden') && imgWrapperNew.classList.contains('hidden')) return; 
@@ -425,9 +356,14 @@ class DiffWindow:
             setTransform();
         }};
 
-        // --- Text/Data Formatters ---
-        function escapeHtml(unsafe) {{
-            return unsafe.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        function escapeHtml(unsafe) {{ return unsafe.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }}
+
+        function formatHealthItem(text) {{
+            let safe = escapeHtml(text);
+            safe = safe.replace(/\[ERROR\]/g, '<strong style="color:#F44336;">[ERROR]</strong>');
+            safe = safe.replace(/\[WARNING\]/g, '<strong style="color:#FF9800;">[WARNING]</strong>');
+            safe = safe.replace(/\[UNCONNECTED\]/g, '<strong style="color:#E91E63;">[UNCONNECTED]</strong>');
+            return safe;
         }}
 
         function formatDiff(diffText) {{
@@ -442,11 +378,8 @@ class DiffWindow:
             }}).join('');
         }}
 
-        // --- View Initialization ---
         function init() {{
-            // Clear existing elements in case this is a saved HTML file being re-opened
             fileListEl.innerHTML = '';
-            
             diffData.forEach((file, index) => {{
                 const li = document.createElement('li');
                 li.className = 'file-item';
@@ -464,21 +397,15 @@ class DiffWindow:
                 fileListEl.appendChild(li);
             }});
 
-            if (diffData.length > 0) {{
-                selectFile(0);
-            }} else {{
-                statusTextEl.innerText = "No files rendered.";
-            }}
+            if (diffData.length > 0) {{ selectFile(0); }} 
+            else {{ statusTextEl.innerText = "No files rendered."; }}
         }}
 
         function selectFile(index) {{
             activeIndex = index;
             const file = diffData[index];
-            showOld = false; 
-            overlayMode = false;
-            swipeMode = false;
+            showOld = false; overlayMode = false; swipeMode = false;
             
-            // Populate Layer Dropdown
             layerDrop.innerHTML = '';
             const layers = Object.keys(file.visuals);
             layers.forEach(l => {{
@@ -487,7 +414,6 @@ class DiffWindow:
                 layerDrop.appendChild(opt);
             }});
 
-            // Logic selection: Default to F.Cu if it exists for PCBs
             if (file.name.endsWith('.kicad_pcb')) {{
                 currentLayer = layers.includes('F.Cu') ? 'F.Cu' : layers[0];
                 layerCont.classList.remove('hidden');
@@ -505,23 +431,16 @@ class DiffWindow:
             document.querySelectorAll('.file-item').forEach((el, i) => {{
                 el.classList.toggle('active', i === index);
             }});
-
             renderView();
         }}
 
-        function toggleSilk(val) {{
-            showSilk = val;
-            renderView();
-        }}
-
-        function changeLayer(val) {{
-            currentLayer = val;
-            renderView();
-        }}
+        function toggleSilk(val) {{ showSilk = val; renderView(); }}
+        function changeLayer(val) {{ currentLayer = val; renderView(); }}
 
         function switchTab(tab) {{
             currentTab = tab;
             document.getElementById('tab-visual').classList.toggle('active', tab === 'visual');
+            document.getElementById('tab-health').classList.toggle('active', tab === 'health');
             document.getElementById('tab-todos').classList.toggle('active', tab === 'todos');
             document.getElementById('tab-netlist').classList.toggle('active', tab === 'netlist');
             document.getElementById('tab-bom').classList.toggle('active', tab === 'bom');
@@ -534,7 +453,6 @@ class DiffWindow:
             const visual = file.visuals[currentLayer] || {{}};
             const isSch = file.name.endsWith('.kicad_sch');
             
-            // Logic for matching Silkscreen to Copper (Front to Front, Back to Back)
             let silkLayer = null;
             if (showSilk) {{
                 if (currentLayer.startsWith('F.')) silkLayer = 'F.Silkscreen';
@@ -542,24 +460,20 @@ class DiffWindow:
             }}
             const silkVisual = silkLayer ? file.visuals[silkLayer] : null;
 
-            // Show sch-specific tabs only for Schematics (netlist/bom), but TODOs for both!
             document.getElementById('tab-netlist').classList.toggle('hidden', !isSch);
             document.getElementById('tab-bom').classList.toggle('hidden', !isSch);
 
             noSelectionEl.classList.add('hidden');
             noOldMsgEl.classList.add('hidden');
             
-            // Reset visibility
             viewerContainer.classList.add('hidden');
             textDiffContainer.classList.add('hidden');
             todosContainer.classList.add('hidden');
+            healthContainer.classList.add('hidden');
 
-            // Handle Logic Text Views (Netlist / BOM)
+            // --- Netlist / BOM ---
             if (currentTab === 'netlist' || currentTab === 'bom') {{
-                btnToggleDiff.classList.add('hidden');
-                btnToggleOverlay.classList.add('hidden');
-                btnToggleSwipe.classList.add('hidden');
-                resetBtn.classList.add('hidden');
+                btnToggleDiff.classList.add('hidden'); btnToggleOverlay.classList.add('hidden'); btnToggleSwipe.classList.add('hidden'); resetBtn.classList.add('hidden');
                 textDiffContainer.classList.remove('hidden');
                 
                 const diffContent = currentTab === 'netlist' ? file.netlistDiff : file.bomDiff;
@@ -568,12 +482,47 @@ class DiffWindow:
                 return;
             }}
             
-            // Handle TODOs View
+            // --- Health (DRC/ERC) ---
+            if (currentTab === 'health') {{
+                btnToggleDiff.classList.add('hidden'); btnToggleOverlay.classList.add('hidden'); btnToggleSwipe.classList.add('hidden'); resetBtn.classList.add('hidden');
+                healthContainer.classList.remove('hidden');
+                
+                const health = file.health || {{new: [], resolved: [], unresolved: []}};
+                
+                let emptyChecksMsg = "";
+                if (health.new.length === 0 && health.resolved.length === 0 && health.unresolved.length === 0) {{
+                    emptyChecksMsg = "<div style='padding:15px; background:rgba(255,152,0,0.1); border:1px solid #FF9800; border-radius:4px; margin-bottom:15px;'><strong>Note:</strong> No violations detected, OR the <i>'Run DRC/ERC Checks'</i> box was not checked before generating this view.</div>";
+                }}
+
+                let html = emptyChecksMsg + '<div class="todos-wrapper">';
+                
+                // Resolved
+                html += '<div class="todos-column"><div class="todos-header" style="color:#4CAF50;">Resolved (Fixed)</div><ul class="todo-list">';
+                if (health.resolved.length === 0) html += '<li class="todo-empty">No issues were fixed in this pass.</li>';
+                else health.resolved.forEach(t => html += `<li class="todo-item todo-new">${{formatHealthItem(t)}}</li>`);
+                html += '</ul></div>';
+
+                // Unresolved
+                html += '<div class="todos-column"><div class="todos-header" style="color:#FF9800;">Unresolved (Existing)</div><ul class="todo-list">';
+                if (health.unresolved.length === 0) html += '<li class="todo-empty">No persistent issues.</li>';
+                else health.unresolved.forEach(t => html += `<li class="todo-item todo-old">${{formatHealthItem(t)}}</li>`);
+                html += '</ul></div>';
+                
+                // New
+                html += '<div class="todos-column"><div class="todos-header" style="color:#F44336;">New Issues</div><ul class="todo-list">';
+                if (health.new.length === 0) html += '<li class="todo-empty">No new issues introduced! 🎉</li>';
+                else health.new.forEach(t => html += `<li class="todo-item" style="border-left-color: #F44336;">${{formatHealthItem(t)}}</li>`);
+                html += '</ul></div>';
+
+                html += '</div>';
+                healthContainer.innerHTML = html;
+                statusTextEl.innerHTML = `Showing: <strong>Design Health (DRC/ERC)</strong>`;
+                return;
+            }}
+
+            // --- TODOs ---
             if (currentTab === 'todos') {{
-                btnToggleDiff.classList.add('hidden');
-                btnToggleOverlay.classList.add('hidden');
-                btnToggleSwipe.classList.add('hidden');
-                resetBtn.classList.add('hidden');
+                btnToggleDiff.classList.add('hidden'); btnToggleOverlay.classList.add('hidden'); btnToggleSwipe.classList.add('hidden'); resetBtn.classList.add('hidden');
                 todosContainer.classList.remove('hidden');
                 
                 const todos = file.todos || {{curr: [], old: []}};
@@ -594,38 +543,23 @@ class DiffWindow:
                 return;
             }}
 
-            // --- Handle Visual View ---
+            // --- Visual View ---
             viewerContainer.classList.remove('hidden');
             
-            if (visual.old && visual.curr) {{
-                btnToggleDiff.classList.remove('hidden');
-                btnToggleOverlay.classList.remove('hidden');
-                btnToggleSwipe.classList.remove('hidden');
-            }} else {{
-                btnToggleDiff.classList.add('hidden');
-                btnToggleOverlay.classList.add('hidden');
-                btnToggleSwipe.classList.add('hidden');
-            }}
+            if (visual.old && visual.curr) {{ btnToggleDiff.classList.remove('hidden'); btnToggleOverlay.classList.remove('hidden'); btnToggleSwipe.classList.remove('hidden'); }} 
+            else {{ btnToggleDiff.classList.add('hidden'); btnToggleOverlay.classList.add('hidden'); btnToggleSwipe.classList.add('hidden'); }}
             
-            const isPdf = (visual.curr && visual.curr.toLowerCase().includes('.pdf')) || 
-                          (visual.old && visual.old.toLowerCase().includes('.pdf'));
+            const isPdf = (visual.curr && visual.curr.toLowerCase().includes('.pdf')) || (visual.old && visual.old.toLowerCase().includes('.pdf'));
 
-            // Handle Schematic SVGs specific styling (prevent black-on-black text)
             if (isSch && !isPdf) {{
-                newImgEl.style.backgroundColor = '#ffffff';
-                oldImgEl.style.backgroundColor = '#ffffff';
-                newImgEl.style.filter = 'none'; // Remove PCB contrast boost
-                oldImgEl.style.filter = 'none';
+                newImgEl.style.backgroundColor = '#ffffff'; oldImgEl.style.backgroundColor = '#ffffff';
+                newImgEl.style.filter = 'none'; oldImgEl.style.filter = 'none';
             }} else {{
-                newImgEl.style.backgroundColor = '';
-                oldImgEl.style.backgroundColor = '';
-                newImgEl.style.filter = '';
-                oldImgEl.style.filter = '';
+                newImgEl.style.backgroundColor = ''; oldImgEl.style.backgroundColor = '';
+                newImgEl.style.filter = ''; oldImgEl.style.filter = '';
             }}
 
-            // Hide raw media tags initially
-            imgWrapperOld.classList.add('hidden');
-            imgWrapperNew.classList.add('hidden');
+            imgWrapperOld.classList.add('hidden'); imgWrapperNew.classList.add('hidden');
             [newImgEl, oldImgEl, newSilkImgEl, oldSilkImgEl, newPdfEl, oldPdfEl, newSilkPdfEl, oldSilkPdfEl].forEach(e => e.classList.add('hidden'));
 
             if (isPdf) {{
@@ -636,36 +570,25 @@ class DiffWindow:
                 if (silkVisual && silkVisual.curr) {{ newSilkPdfEl.src = silkVisual.curr; newSilkPdfEl.classList.remove('hidden'); }}
             }} else {{
                 resetBtn.classList.remove('hidden');
-                imgWrapperOld.classList.remove('hidden');
-                imgWrapperNew.classList.remove('hidden');
+                imgWrapperOld.classList.remove('hidden'); imgWrapperNew.classList.remove('hidden');
                 if (visual.old) {{ oldImgEl.src = visual.old; oldImgEl.classList.remove('hidden'); }}
                 if (visual.curr) {{ newImgEl.src = visual.curr; newImgEl.classList.remove('hidden'); }}
                 if (silkVisual && silkVisual.old) {{ oldSilkImgEl.src = silkVisual.old; oldSilkImgEl.classList.remove('hidden'); }}
                 if (silkVisual && silkVisual.curr) {{ newSilkImgEl.src = silkVisual.curr; newSilkImgEl.classList.remove('hidden'); }}
             }}
 
-            // Setup mode display
-            wrapperOld.classList.add('hidden');
-            wrapperNew.classList.add('hidden');
-            wrapperNew.classList.remove('overlay-mode');
-            wrapperNew.style.clipPath = '';
-            sliderHandle.classList.add('hidden');
+            wrapperOld.classList.add('hidden'); wrapperNew.classList.add('hidden');
+            wrapperNew.classList.remove('overlay-mode'); wrapperNew.style.clipPath = ''; sliderHandle.classList.add('hidden');
 
             if (swipeMode && visual.old && visual.curr) {{
-                wrapperOld.classList.remove('hidden');
-                wrapperNew.classList.remove('hidden');
-                sliderHandle.classList.remove('hidden');
-                wrapperNew.style.clipPath = `polygon(0 0, ${{swipePos}}% 0, ${{swipePos}}% 100%, 0 100%)`;
-                sliderHandle.style.left = swipePos + '%';
+                wrapperOld.classList.remove('hidden'); wrapperNew.classList.remove('hidden'); sliderHandle.classList.remove('hidden');
+                wrapperNew.style.clipPath = `polygon(0 0, ${{swipePos}}% 0, ${{swipePos}}% 100%, 0 100%)`; sliderHandle.style.left = swipePos + '%';
                 statusTextEl.innerHTML = 'Showing: <strong style="color: #00bcd4;">Swipe Mode</strong>';
             }} else if (overlayMode && visual.old && visual.curr) {{
-                wrapperOld.classList.remove('hidden');
-                wrapperNew.classList.remove('hidden');
-                wrapperNew.classList.add('overlay-mode');
+                wrapperOld.classList.remove('hidden'); wrapperNew.classList.remove('hidden'); wrapperNew.classList.add('overlay-mode');
                 statusTextEl.innerHTML = 'Showing: <strong style="color: #FF9800;">Overlay Mode</strong>';
             }} else if (showOld && visual.old) {{
-                wrapperOld.classList.remove('hidden');
-                statusTextEl.innerHTML = 'Showing: <strong style="color: #F44336;">' + targetName + '</strong>';
+                wrapperOld.classList.remove('hidden'); statusTextEl.innerHTML = 'Showing: <strong style="color: #F44336;">' + targetName + '</strong>';
             }} else {{
                 if (visual.curr) {{
                     wrapperNew.classList.remove('hidden');
@@ -675,59 +598,18 @@ class DiffWindow:
             }}
         }}
 
-        function toggleSwipe() {{
-            if (activeIndex < 0 || currentTab !== 'visual') return;
-            const visual = diffData[activeIndex].visuals[currentLayer];
-            if (visual && visual.old && visual.curr) {{
-                swipeMode = !swipeMode;
-                if (swipeMode) {{ overlayMode = false; showOld = false; }}
-                renderView();
-            }}
-        }}
-
-        function toggleOverlay() {{
-            if (activeIndex < 0 || currentTab !== 'visual') return;
-            const visual = diffData[activeIndex].visuals[currentLayer];
-            if (visual && visual.old && visual.curr) {{
-                overlayMode = !overlayMode;
-                if (overlayMode) {{ swipeMode = false; showOld = false; }}
-                renderView();
-            }}
-        }}
-
-        function toggleDiff() {{
-            if (activeIndex < 0 || currentTab !== 'visual') return;
-            const visual = diffData[activeIndex].visuals[currentLayer];
-            if (visual && visual.old) {{
-                showOld = !showOld;
-                overlayMode = false;
-                swipeMode = false;
-                renderView();
-            }}
-        }}
+        function toggleSwipe() {{ if (activeIndex < 0 || currentTab !== 'visual') return; const visual = diffData[activeIndex].visuals[currentLayer]; if (visual && visual.old && visual.curr) {{ swipeMode = !swipeMode; if (swipeMode) {{ overlayMode = false; showOld = false; }} renderView(); }} }}
+        function toggleOverlay() {{ if (activeIndex < 0 || currentTab !== 'visual') return; const visual = diffData[activeIndex].visuals[currentLayer]; if (visual && visual.old && visual.curr) {{ overlayMode = !overlayMode; if (overlayMode) {{ swipeMode = false; showOld = false; }} renderView(); }} }}
+        function toggleDiff() {{ if (activeIndex < 0 || currentTab !== 'visual') return; const visual = diffData[activeIndex].visuals[currentLayer]; if (visual && visual.old) {{ showOld = !showOld; overlayMode = false; swipeMode = false; renderView(); }} }}
 
         document.addEventListener('keydown', function(event) {{
-            // Ignore keystrokes if focused on select or inputs
             if(document.activeElement.tagName === 'SELECT' || document.activeElement.tagName === 'INPUT') return;
-
-            if (event.code === 'Space') {{
-                event.preventDefault(); toggleDiff();
-            }} else if (event.code === 'KeyO') {{
-                event.preventDefault(); toggleOverlay();
-            }} else if (event.code === 'KeyW') {{
-                event.preventDefault(); toggleSwipe();
-            }} else if (event.code === 'KeyT') {{
-                event.preventDefault(); toggleTheme();
-            }} else if (event.key >= '1' && event.key <= '9') {{
-                const idx = parseInt(event.key) - 1;
-                if (layerDrop.options[idx]) {{
-                    layerDrop.selectedIndex = idx;
-                    changeLayer(layerDrop.value);
-                }}
-            }} else if (event.code === 'KeyS') {{
-                silkCheckbox.checked = !silkCheckbox.checked;
-                toggleSilk(silkCheckbox.checked);
-            }}
+            if (event.code === 'Space') {{ event.preventDefault(); toggleDiff(); }}
+            else if (event.code === 'KeyO') {{ event.preventDefault(); toggleOverlay(); }}
+            else if (event.code === 'KeyW') {{ event.preventDefault(); toggleSwipe(); }}
+            else if (event.code === 'KeyT') {{ event.preventDefault(); toggleTheme(); }}
+            else if (event.key >= '1' && event.key <= '9') {{ const idx = parseInt(event.key) - 1; if (layerDrop.options[idx]) {{ layerDrop.selectedIndex = idx; changeLayer(layerDrop.value); }} }}
+            else if (event.code === 'KeyS') {{ silkCheckbox.checked = !silkCheckbox.checked; toggleSilk(silkCheckbox.checked); }}
         }});
 
         init();

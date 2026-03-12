@@ -44,7 +44,7 @@ class CommitDialog(wx.Dialog):
 
 class CommandCenterDialog(wx.Dialog):
     def __init__(self, parent, project_dir):
-        super().__init__(parent, title="GitHub Command Center", size=(500, 680))
+        super().__init__(parent, title="GitHub Command Center", size=(500, 720))
         self.project_dir = project_dir
         self.git_cmd = "git.exe" if os.name == "nt" else "git"
         
@@ -75,12 +75,16 @@ class CommandCenterDialog(wx.Dialog):
             
         self.cb_targets = wx.ComboBox(panel, choices=targets, style=wx.CB_READONLY)
         self.cb_targets.SetSelection(0)
-        # BIND EVENT: Update status when the comparison target changes
         self.cb_targets.Bind(wx.EVT_COMBOBOX, self.on_target_change)
         
         target_sizer.Add(self.cb_targets, proportion=1, flag=wx.EXPAND)
+        main_vbox.Add(target_sizer, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=10)
         
-        main_vbox.Add(target_sizer, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=15)
+        # --- DRC / ERC Checkbox ---
+        self.cb_drc = wx.CheckBox(panel, label="Run DRC / ERC Checks (May take longer)")
+        self.cb_drc.SetToolTip("Executes KiCad's electrical and design rules checkers and compares violations.")
+        self.cb_drc.SetValue(False) # Off by default to keep viewing snappy
+        main_vbox.Add(self.cb_drc, flag=wx.LEFT | wx.RIGHT | wx.BOTTOM, border=15)
 
         # --- Action Buttons ---
         btn_diff = wx.Button(panel, label="View Local Changes (Visual Diff)", size=(-1, 40))
@@ -96,9 +100,8 @@ class CommandCenterDialog(wx.Dialog):
         
         btn_push = wx.Button(panel, label="Push Changes to GitHub", size=(-1, 40))
         
-        # The "Emergency Reset" rebranded as the primary Sync/Download tool
         btn_sync = wx.Button(panel, label="Download from Server (Force Sync)", size=(-1, 40))
-        btn_sync.SetBackgroundColour(wx.Colour(230, 240, 255)) # Subtle highlight
+        btn_sync.SetBackgroundColour(wx.Colour(230, 240, 255)) 
         
         btn_diff.Bind(wx.EVT_BUTTON, self.on_diff)
         btn_commit.Bind(wx.EVT_BUTTON, self.on_commit)
@@ -138,26 +141,20 @@ class CommandCenterDialog(wx.Dialog):
         self.update_git_status()
 
     def on_target_change(self, event):
-        """Update status label when user changes the comparison branch/commit."""
         self.update_git_status()
 
     def update_git_status(self):
-        """Calculates changes relative to the CURRENTLY SELECTED target in the dropdown."""
         if not os.path.isdir(os.path.join(self.project_dir, ".git")):
             self.status_lbl.SetLabel("Status: Not a Git repository.")
             return
         try:
-            # 1. Get the current active working branch
             res_curr = subprocess.run([self.git_cmd, "-C", self.project_dir, "branch", "--show-current"], 
                                       capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
             curr_branch = res_curr.stdout.strip() or "Detached HEAD"
 
-            # 2. Get target from the dropdown
             target_raw = self.cb_targets.GetStringSelection()
-            # Handle the "h (subject)" format if it's a commit hash
             actual_target = target_raw.split(' ')[0] if ' ' in target_raw else target_raw
             
-            # 3. Use the engine's scoped status check
             status_dict = self.engine.get_git_status(target=actual_target)
             changes = len(status_dict)
             
@@ -255,23 +252,22 @@ class CommandCenterDialog(wx.Dialog):
         wx.BeginBusyCursor()
         try:
             selected_target = self.cb_targets.GetStringSelection()
-            diffs, summary = self.engine.render_all_diffs(show_unchanged=False, compare_target=selected_target)
+            run_checks = self.cb_drc.GetValue()
+            
+            diffs, summary = self.engine.render_all_diffs(show_unchanged=False, compare_target=selected_target, run_drc_erc=run_checks)
             if not diffs:
                 wx.MessageBox(f"No local changes detected against {selected_target}.", "Info")
             else:
-                # Pass the selected target name to the window for clear identification
                 win = DiffWindow(diffs, summary, target_name=selected_target)
                 win.Show()
         finally:
             if wx.IsBusy(): wx.EndBusyCursor()
 
     def on_force_sync(self, event):
-        """Rebranded Emergency Reset: The primary way to get server data."""
         if not os.path.isdir(os.path.join(self.project_dir, ".git")):
             wx.MessageBox("No Git repo found.", "Error")
             return
 
-        # Try to find current branch to suggest a target
         res_br = subprocess.run([self.git_cmd, "-C", self.project_dir, "branch", "--show-current"], 
                                 capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
         curr = res_br.stdout.strip() or "main"
@@ -286,15 +282,11 @@ class CommandCenterDialog(wx.Dialog):
     def perform_atomic_overwrite(self, remote_ref):
         wx.BeginBusyCursor()
         try:
-            # 1. Fetch first to make sure we have the latest refs
             subprocess.run([self.git_cmd, "-C", self.project_dir, "fetch", "origin"], creationflags=CREATE_NO_WINDOW)
-
-            # 2. Force the overwrite
             subprocess.run([self.git_cmd, "-C", self.project_dir, "reset", "--hard", remote_ref], 
                                  capture_output=True, text=True, check=True, creationflags=CREATE_NO_WINDOW)
             subprocess.run([self.git_cmd, "-C", self.project_dir, "clean", "-fd"], creationflags=CREATE_NO_WINDOW)
 
-            # 3. Success Feedback with instructions
             pcbnew.Refresh()
             msg = ("SUCCESS!\n\n"
                    "Local files updated to match " + remote_ref + ".\n\n"
@@ -321,11 +313,9 @@ class CommandCenterDialog(wx.Dialog):
                 return
 
             try:
-                # Initialize Git if missing
                 if not os.path.isdir(os.path.join(self.project_dir, ".git")):
                     subprocess.run([self.git_cmd, "-C", self.project_dir, "init"], check=True, creationflags=CREATE_NO_WINDOW)
                 
-                # Handle Branch Creation or Selection with validation
                 if branch:
                     if re.search(r'\s|~|\^|:|\?|\*|\[|\\|\.\.|@\{|^/|/$|\.$', branch):
                         wx.MessageBox(f"Invalid branch name format: '{branch}'", "Git Error", wx.ICON_ERROR)
@@ -337,21 +327,17 @@ class CommandCenterDialog(wx.Dialog):
                     existing_branches = [b.strip() for b in res_check.stdout.split('\n') if b.strip()]
 
                     if branch in existing_branches:
-                        # Branch exists! Just check it out.
                         res_branch = subprocess.run([self.git_cmd, "-C", self.project_dir, "checkout", branch], 
                                                     capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
                     else:
-                        # Doesn't exist, create it.
                         res_branch = subprocess.run([self.git_cmd, "-C", self.project_dir, "checkout", "-b", branch], 
                                                     capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
                     
-                    # Intercept Standard Git Errors (e.g., uncommitted conflicts blocking checkout)
                     if res_branch.returncode != 0:
                         wx.MessageBox(f"Failed to switch to branch:\n{res_branch.stderr}", "Git Error", wx.ICON_ERROR)
                         dlg.Destroy()
                         return
 
-                # Proceed to commit
                 subprocess.run([self.git_cmd, "-C", self.project_dir, "add", "."], check=True, creationflags=CREATE_NO_WINDOW)
                 res_commit = subprocess.run([self.git_cmd, "-C", self.project_dir, "commit", "-m", msg], 
                                             capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
@@ -364,7 +350,6 @@ class CommandCenterDialog(wx.Dialog):
                 
                 self.update_git_status()
                 
-                # Refresh targets dropdown so new commits/branches appear instantly
                 current_sel = self.cb_targets.GetStringSelection()
                 new_targets = self.engine.get_git_targets()
                 if new_targets:
@@ -382,7 +367,6 @@ class CommandCenterDialog(wx.Dialog):
     def on_push(self, event):
         wx.BeginBusyCursor()
         try:
-            # 1. Get current branch name
             res_br = subprocess.run([self.git_cmd, "-C", self.project_dir, "branch", "--show-current"], 
                                     capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
             branch = res_br.stdout.strip()
@@ -390,22 +374,18 @@ class CommandCenterDialog(wx.Dialog):
                 wx.MessageBox("Could not detect current branch. Are you in a detached HEAD state?", "Error")
                 return
 
-            # 2. Check if 'origin' remote exists
             res_rem = subprocess.run([self.git_cmd, "-C", self.project_dir, "remote"], 
                                      capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
             if "origin" not in res_rem.stdout:
                 wx.MessageBox("Remote 'origin' not found. Please add a remote using 'git remote add origin <url>'", "Error")
                 return
 
-            # 3. Push with --set-upstream (-u)
-            # This is specifically needed when pushing a new branch for the first time
             res = subprocess.run([self.git_cmd, "-C", self.project_dir, "push", "-u", "origin", branch], 
                                  capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
             
             if res.returncode == 0:
                 wx.MessageBox(f"Successfully pushed branch '{branch}' to GitHub.", "Success")
             else:
-                # Show both stdout and stderr because Git can be inconsistent with where it sends error info
                 error_msg = res.stderr.strip() or res.stdout.strip() or "Unknown Git error."
                 wx.MessageBox(f"Push Failed:\n{error_msg}", "Error")
                 
