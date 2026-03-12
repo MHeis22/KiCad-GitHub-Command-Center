@@ -4,6 +4,7 @@ import tempfile
 import sys
 import shutil
 import difflib
+import re
 
 # Fix for Windows: prevents the plugin from popping up CMD windows or hanging
 CREATE_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
@@ -34,6 +35,24 @@ class DiffEngine:
             pass # Not a git repo or git error
         return status_dict
 
+    def _get_pcb_layers(self, pcb_file):
+        """Quickly parse the .kicad_pcb file to find active copper layers and technical layers."""
+        layers = ["F.Cu", "B.Cu", "F.Silkscreen", "B.Silkscreen", "Edge.Cuts"]
+        if not os.path.exists(pcb_file):
+            return layers
+            
+        try:
+            with open(pcb_file, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read(10000) # Only need the header
+                # Find (layers ...) section and extract (0 "F.Cu" signal) etc.
+                matches = re.findall(r'\(\d+\s+"([^"]+)"\s+signal\)', content)
+                if matches:
+                    # Replace default copper with actual found copper layers
+                    layers = matches + ["F.Silkscreen", "B.Silkscreen", "Edge.Cuts"]
+        except:
+            pass
+        return layers
+
     def _generate_text_diff(self, old_file, new_file):
         """Helper to generate a unified diff from two text files (like Netlists or BOMs)"""
         if not old_file or not new_file or not os.path.exists(old_file) or not os.path.exists(new_file):
@@ -52,13 +71,10 @@ class DiffEngine:
     def render_all_diffs(self, show_unchanged=False, compare_target="HEAD"):
         """
         Scans for .kicad_pcb and .kicad_sch. Exports visual and logical files.
-        compare_target allows diffing against any git ref (HEAD, origin/main, etc.)
-        Returns (list_of_diff_dicts, summary_string)
         """
         git_status = self.get_git_status()
         target_files = []
         
-        # 1. Find all relevant hardware files in the project root
         for fname in os.listdir(self.project_dir):
             if fname.endswith('.kicad_pcb') or fname.endswith('.kicad_sch'):
                 target_files.append(fname)
@@ -78,57 +94,69 @@ class DiffEngine:
                 continue
                 
             summary_lines.append(f"{fname}: {status_text}")
-            
             safe_name = fname.replace('.', '_')
             is_pcb = fname.endswith('.kicad_pcb')
-            ext = "svg" if is_pcb else "pdf"
             
-            curr_out = os.path.join(self.tmp_dir, f"curr_{safe_name}.{ext}")
-            old_out = os.path.join(self.tmp_dir, f"old_{safe_name}.{ext}")
+            # Temporary storage for reference board from Git
             old_board_tmp = os.path.join(self.tmp_dir, f"tmp_git_{fname}")
-            curr_board_tmp = os.path.join(self.tmp_dir, f"tmp_curr_{fname}")
             
-            if os.path.exists(curr_out): os.remove(curr_out)
-            if os.path.exists(old_out): os.remove(old_out)
-
-            cli_args = [self.kicad_cli, "pcb" if is_pcb else "sch", "export", ext]
+            # Export Layers Map
+            layers_to_export = ["Default"] # For Schematics
             if is_pcb:
-                cli_args.extend(["--layers", "F.Cu,F.Silkscreen,Edge.Cuts", "--exclude-drawing-sheet"])
-                
+                layers_to_export = self._get_pcb_layers(file_path)
+            
+            visuals = {} # Map layer_name -> {curr: path, old: path}
             netlist_diff = ""
             bom_diff = ""
 
             try:
-                # --- Current Version Exports ---
-                curr_target = file_path
-                if not is_pcb:
-                    shutil.copy2(file_path, curr_board_tmp)
-                    curr_target = curr_board_tmp
-
-                subprocess.run(cli_args + [curr_target, "--output", curr_out], 
-                               check=True, capture_output=True, text=True, input="y\n",
-                               creationflags=CREATE_NO_WINDOW)
-                
-                if not is_pcb:
-                    curr_net = os.path.join(self.tmp_dir, f"curr_{safe_name}.net")
-                    curr_bom = os.path.join(self.tmp_dir, f"curr_{safe_name}.csv")
-                    subprocess.run([self.kicad_cli, "sch", "export", "netlist", curr_target, "--output", curr_net], capture_output=True, creationflags=CREATE_NO_WINDOW)
-                    subprocess.run([self.kicad_cli, "sch", "export", "bom", curr_target, "--output", curr_bom], capture_output=True, creationflags=CREATE_NO_WINDOW)
-                
-                # --- Reference (HEAD or Remote) Version Exports ---
+                # 1. Export Git Reference version first if it exists
                 has_old = False
-                # If we are comparing against something other than HEAD, we always try to find the file
                 with open(old_board_tmp, "wb") as f:
                     res = subprocess.run([self.git_cmd, "-C", self.project_dir, "show", f"{compare_target}:{fname}"],
                                          stdout=f, stderr=subprocess.PIPE, creationflags=CREATE_NO_WINDOW)
-                
                 if res.returncode == 0:
-                    subprocess.run(cli_args + [old_board_tmp, "--output", old_out], 
-                                   check=True, capture_output=True, text=True, input="y\n",
-                                   creationflags=CREATE_NO_WINDOW)
                     has_old = True
+
+                # 2. Iterate through layers (or just 'Default' for SCH)
+                for layer in layers_to_export:
+                    ext = "svg" if is_pcb else "pdf"
+                    layer_safe = layer.replace('.', '_')
                     
-                    if not is_pcb:
+                    curr_out = os.path.join(self.tmp_dir, f"curr_{safe_name}_{layer_safe}.{ext}")
+                    old_out = os.path.join(self.tmp_dir, f"old_{safe_name}_{layer_safe}.{ext}")
+                    
+                    # Command setup
+                    cli_args = [self.kicad_cli, "pcb" if is_pcb else "sch", "export", ext]
+                    if is_pcb:
+                        # For specific layers, we often want Edge.Cuts visible too for context
+                        active_layers = layer
+                        if layer != "Edge.Cuts":
+                            active_layers += ",Edge.Cuts"
+                        cli_args.extend(["--layers", active_layers, "--exclude-drawing-sheet"])
+                    
+                    # Render Current
+                    subprocess.run(cli_args + [file_path, "--output", curr_out], 
+                                   capture_output=True, creationflags=CREATE_NO_WINDOW)
+                    
+                    # Render Old
+                    if has_old:
+                        subprocess.run(cli_args + [old_board_tmp, "--output", old_out], 
+                                       capture_output=True, creationflags=CREATE_NO_WINDOW)
+                    
+                    visuals[layer] = {
+                        "curr": curr_out if os.path.exists(curr_out) else None,
+                        "old": old_out if os.path.exists(old_out) else None
+                    }
+
+                # 3. Handle Logical Diffs (Schematics only)
+                if not is_pcb:
+                    curr_net = os.path.join(self.tmp_dir, f"curr_{safe_name}.net")
+                    curr_bom = os.path.join(self.tmp_dir, f"curr_{safe_name}.csv")
+                    subprocess.run([self.kicad_cli, "sch", "export", "netlist", file_path, "--output", curr_net], capture_output=True, creationflags=CREATE_NO_WINDOW)
+                    subprocess.run([self.kicad_cli, "sch", "export", "bom", file_path, "--output", curr_bom], capture_output=True, creationflags=CREATE_NO_WINDOW)
+                    
+                    if has_old:
                         old_net = os.path.join(self.tmp_dir, f"old_{safe_name}.net")
                         old_bom = os.path.join(self.tmp_dir, f"old_{safe_name}.csv")
                         subprocess.run([self.kicad_cli, "sch", "export", "netlist", old_board_tmp, "--output", old_net], capture_output=True, creationflags=CREATE_NO_WINDOW)
@@ -140,8 +168,7 @@ class DiffEngine:
                 diffs.append({
                     "name": fname,
                     "status": status_text,
-                    "curr": curr_out if os.path.exists(curr_out) else None,
-                    "old": old_out if has_old and os.path.exists(old_out) else None,
+                    "visuals": visuals,
                     "netlist_diff": netlist_diff,
                     "bom_diff": bom_diff
                 })
