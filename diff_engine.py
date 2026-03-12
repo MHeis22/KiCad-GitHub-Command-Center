@@ -5,6 +5,7 @@ import sys
 import shutil
 import difflib
 import re
+import glob
 
 # Fix for Windows: prevents the plugin from popping up CMD windows or hanging
 CREATE_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
@@ -76,7 +77,6 @@ class DiffEngine:
             with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
                 content = f.read()
             # Find anything inside double quotes containing "TODO" (case-insensitive)
-            # This captures labels/texts like: (text "TODO: swap to the stm32 MCU" (at ...))
             todos = re.findall(r'"([^"]*TODO[^"]*)"', content, re.IGNORECASE)
             
             # Clean up whitespace and remove duplicates while preserving order
@@ -84,13 +84,32 @@ class DiffEngine:
             result = []
             for t in todos:
                 clean_t = t.strip()
-                # Ignore empty strings or single newline breaks
                 if clean_t and clean_t not in seen:
                     seen.add(clean_t)
                     result.append(clean_t)
             return result
         except Exception as e:
             return [f"Error extracting TODOs: {e}"]
+
+    def _find_correct_svg(self, out_path, expected_base_name):
+        """Helper to explicitly find the right SVG sheet, ignoring KiCad subsheets"""
+        if os.path.isdir(out_path):
+            expected = os.path.join(out_path, f"{expected_base_name}.svg")
+            if os.path.exists(expected):
+                return expected
+            # Fallback
+            svgs = glob.glob(os.path.join(out_path, "*.svg"))
+            return svgs[0] if svgs else out_path
+            
+        if not os.path.exists(out_path):
+            matches = glob.glob(out_path.replace(".svg", "*.svg"))
+            for m in matches:
+                if os.path.basename(m) == f"{expected_base_name}.svg":
+                    return m
+            if matches:
+                return matches[0]
+                
+        return out_path
 
     def render_all_diffs(self, show_unchanged=False, compare_target="HEAD"):
         """
@@ -120,9 +139,24 @@ class DiffEngine:
             summary_lines.append(f"{fname}: {status_text}")
             safe_name = fname.replace('.', '_')
             is_pcb = fname.endswith('.kicad_pcb')
+            base_name = os.path.splitext(fname)[0]
             
-            # Temporary storage for reference board from Git
-            old_board_tmp = os.path.join(self.tmp_dir, f"tmp_git_{fname}")
+            # Temporary storage for reference board from Git.
+            # MUST NOT start with a dot '.' otherwise glob ignores it.
+            old_board_tmp = os.path.join(self.project_dir, f"tmp_git_old_{fname}")
+            old_base_name = f"tmp_git_old_{base_name}"
+            
+            # Find the active project file to copy alongside the temp board 
+            # so KiCad correctly initializes the environment and doesn't render blanks.
+            expected_pro = os.path.join(self.project_dir, f"{base_name}.kicad_pro")
+            pro_path = expected_pro if os.path.exists(expected_pro) else None
+            if not pro_path:
+                pro_files = glob.glob(os.path.join(self.project_dir, "*.kicad_pro"))
+                if pro_files: pro_path = pro_files[0]
+                
+            old_pro_tmp = None
+            if pro_path:
+                old_pro_tmp = os.path.join(self.project_dir, f"{old_base_name}.kicad_pro")
             
             # Export Layers Map
             layers_to_export = ["Default"] # For Schematics
@@ -141,50 +175,74 @@ class DiffEngine:
                                          stdout=f, stderr=subprocess.PIPE, creationflags=CREATE_NO_WINDOW)
                 if res.returncode == 0:
                     has_old = True
+                    if pro_path:
+                        shutil.copy2(pro_path, old_pro_tmp)
 
                 # 2. Iterate through layers (or just 'Default' for SCH)
                 for layer in layers_to_export:
-                    ext = "svg" if is_pcb else "pdf"
+                    ext = "svg" # Always use SVG for both PCB and Schematic
                     layer_safe = layer.replace('.', '_')
                     
                     curr_out = os.path.join(self.tmp_dir, f"curr_{safe_name}_{layer_safe}.{ext}")
                     old_out = os.path.join(self.tmp_dir, f"old_{safe_name}_{layer_safe}.{ext}")
                     
+                    # Pre-clean stale files/directories safely
+                    for old_temp in glob.glob(curr_out.replace(".svg", "*.svg")) + glob.glob(old_out.replace(".svg", "*.svg")):
+                        try:
+                            if os.path.isdir(old_temp): shutil.rmtree(old_temp)
+                            else: os.remove(old_temp)
+                        except: pass
+
                     # Command setup
                     cli_args = [self.kicad_cli, "pcb" if is_pcb else "sch", "export", ext]
                     if is_pcb:
-                        # For specific layers, we often want Edge.Cuts visible too for context
                         active_layers = layer
                         if layer != "Edge.Cuts":
                             active_layers += ",Edge.Cuts"
                         cli_args.extend(["--layers", active_layers, "--exclude-drawing-sheet"])
+                    else:
+                        # Schematics: DO NOT use --black-and-white (it crashes KiCad for SVG exports)
+                        cli_args.extend(["--exclude-drawing-sheet"])
                     
                     # Render Current
-                    subprocess.run(cli_args + [file_path, "--output", curr_out], 
-                                   capture_output=True, creationflags=CREATE_NO_WINDOW)
+                    res_curr = subprocess.run(cli_args + [file_path, "--output", curr_out], 
+                                   capture_output=True, cwd=self.project_dir, creationflags=CREATE_NO_WINDOW)
                     
+                    if res_curr.returncode != 0:
+                        print(f"Error rendering current {fname}: {res_curr.stderr.decode('utf-8', errors='ignore')}")
+
+                    # Fix for KiCad Schematic SVGs: Find the explicit correct page.
+                    if not is_pcb:
+                        curr_out = self._find_correct_svg(curr_out, base_name)
+
                     # Render Old
                     if has_old:
-                        subprocess.run(cli_args + [old_board_tmp, "--output", old_out], 
-                                       capture_output=True, creationflags=CREATE_NO_WINDOW)
+                        res_old = subprocess.run(cli_args + [old_board_tmp, "--output", old_out], 
+                                       capture_output=True, cwd=self.project_dir, creationflags=CREATE_NO_WINDOW)
+                        
+                        if res_old.returncode != 0:
+                            print(f"Error rendering old {fname}: {res_old.stderr.decode('utf-8', errors='ignore')}")
+
+                        if not is_pcb:
+                            old_out = self._find_correct_svg(old_out, old_base_name)
                     
                     visuals[layer] = {
-                        "curr": curr_out if os.path.exists(curr_out) else None,
-                        "old": old_out if os.path.exists(old_out) else None
+                        "curr": curr_out if os.path.exists(curr_out) and os.path.getsize(curr_out) > 0 and not os.path.isdir(curr_out) else None,
+                        "old": old_out if os.path.exists(old_out) and os.path.getsize(old_out) > 0 and not os.path.isdir(old_out) else None
                     }
 
                 # 3. Handle Logical Diffs (Schematics only)
                 if not is_pcb:
                     curr_net = os.path.join(self.tmp_dir, f"curr_{safe_name}.net")
                     curr_bom = os.path.join(self.tmp_dir, f"curr_{safe_name}.csv")
-                    subprocess.run([self.kicad_cli, "sch", "export", "netlist", file_path, "--output", curr_net], capture_output=True, creationflags=CREATE_NO_WINDOW)
-                    subprocess.run([self.kicad_cli, "sch", "export", "bom", file_path, "--output", curr_bom], capture_output=True, creationflags=CREATE_NO_WINDOW)
+                    subprocess.run([self.kicad_cli, "sch", "export", "netlist", file_path, "--output", curr_net], capture_output=True, cwd=self.project_dir, creationflags=CREATE_NO_WINDOW)
+                    subprocess.run([self.kicad_cli, "sch", "export", "bom", file_path, "--output", curr_bom], capture_output=True, cwd=self.project_dir, creationflags=CREATE_NO_WINDOW)
                     
                     if has_old:
                         old_net = os.path.join(self.tmp_dir, f"old_{safe_name}.net")
                         old_bom = os.path.join(self.tmp_dir, f"old_{safe_name}.csv")
-                        subprocess.run([self.kicad_cli, "sch", "export", "netlist", old_board_tmp, "--output", old_net], capture_output=True, creationflags=CREATE_NO_WINDOW)
-                        subprocess.run([self.kicad_cli, "sch", "export", "bom", old_board_tmp, "--output", old_bom], capture_output=True, creationflags=CREATE_NO_WINDOW)
+                        subprocess.run([self.kicad_cli, "sch", "export", "netlist", old_board_tmp, "--output", old_net], capture_output=True, cwd=self.project_dir, creationflags=CREATE_NO_WINDOW)
+                        subprocess.run([self.kicad_cli, "sch", "export", "bom", old_board_tmp, "--output", old_bom], capture_output=True, cwd=self.project_dir, creationflags=CREATE_NO_WINDOW)
                         
                         netlist_diff = self._generate_text_diff(old_net, curr_net)
                         bom_diff = self._generate_text_diff(old_bom, curr_bom)
@@ -209,6 +267,14 @@ class DiffEngine:
                 
             except Exception as e:
                 print(f"Error rendering {fname}: {e}")
+            finally:
+                # Always clean up our temporary git files so we don't pollute the project dir
+                if os.path.exists(old_board_tmp):
+                    try: os.remove(old_board_tmp)
+                    except: pass
+                if old_pro_tmp and os.path.exists(old_pro_tmp):
+                    try: os.remove(old_pro_tmp)
+                    except: pass
 
         summary = "\n".join(summary_lines) if summary_lines else "No files found."
         return diffs, summary

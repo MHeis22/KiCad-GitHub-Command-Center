@@ -601,6 +601,19 @@ class DiffWindow:
             const isPdf = (visual.curr && visual.curr.toLowerCase().includes('.pdf')) || 
                           (visual.old && visual.old.toLowerCase().includes('.pdf'));
 
+            // Handle Schematic SVGs specific styling (prevent black-on-black text)
+            if (isSch && !isPdf) {{
+                newImgEl.style.backgroundColor = '#ffffff';
+                oldImgEl.style.backgroundColor = '#ffffff';
+                newImgEl.style.filter = 'none'; // Remove PCB contrast boost
+                oldImgEl.style.filter = 'none';
+            }} else {{
+                newImgEl.style.backgroundColor = '';
+                oldImgEl.style.backgroundColor = '';
+                newImgEl.style.filter = '';
+                oldImgEl.style.filter = '';
+            }}
+
             // Hide raw media tags initially
             imgWrapperOld.classList.add('hidden');
             imgWrapperNew.classList.add('hidden');
