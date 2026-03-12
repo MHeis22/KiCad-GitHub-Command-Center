@@ -5,13 +5,14 @@ import pathlib
 import json
 
 class DiffWindow:
-    def __init__(self, diffs, summary_text):
+    def __init__(self, diffs, summary_text, target_name="HEAD"):
         """
         diffs expects a list of dicts: 
         [{'name': '...', 'status': '...', 'visuals': {'LayerName': {'curr': '...', 'old': '...'}}, 'netlist_diff': '...', 'bom_diff': '...', 'todos': {'curr': [], 'old': []}}]
         """
         self.diffs = diffs
         self.summary_text = summary_text.replace('\n', '<br>')
+        self.target_name = target_name
 
     def Show(self):
         html_path = os.path.join(tempfile.gettempdir(), "kicad_diff_viewer.html")
@@ -214,8 +215,8 @@ class DiffWindow:
     <div id="main-content">
         <div id="topbar">
             <div class="summary-box">
-                <strong>Change Summary:</strong><br>
-                {self.summary_text}
+                <strong>Current Diff:</strong><br>
+                Comparing Local against: <span style="color:#00bcd4; font-weight:bold;">{self.target_name}</span>
             </div>
             
             <div class="controls-wrapper">
@@ -254,7 +255,7 @@ class DiffWindow:
         
         <div id="viewer-container">
             <p id="no-selection" class="no-data-msg">No file selected.</p>
-            <p id="no-old-msg" class="no-data-msg hidden">No previous Git commit found for this layer.</p>
+            <p id="no-old-msg" class="no-data-msg hidden">No data found in <span class="target-name-val"></span> for this layer.</p>
             
             <!-- OLD Layer Wrapper -->
             <div id="viewer-wrapper-old" class="viewer-absolute hidden">
@@ -291,6 +292,7 @@ class DiffWindow:
 
     <script>
         const diffData = {diff_json};
+        const targetName = "{self.target_name}";
         let activeIndex = -1;
         let showOld = false;
         let overlayMode = false;
@@ -336,6 +338,9 @@ class DiffWindow:
         const btnToggleDiff = document.getElementById('btn-toggle-diff');
         const btnToggleOverlay = document.getElementById('btn-toggle-overlay');
         const btnToggleSwipe = document.getElementById('btn-toggle-swipe');
+
+        // Set dynamic target name labels
+        document.querySelectorAll('.target-name-val').forEach(el => el.innerText = targetName);
 
         // --- Theme Toggle & Save Report ---
         function toggleTheme() {{
@@ -570,12 +575,12 @@ class DiffWindow:
                 const todos = file.todos || {{curr: [], old: []}};
                 let html = '<div class="todos-wrapper">';
                 
-                html += '<div class="todos-column"><div class="todos-header" style="color:#FF9800;">Previous TODOs</div><ul class="todo-list">';
-                if (!todos.old || todos.old.length === 0) html += '<li class="todo-empty">No TODOs found in the previous commit.</li>';
+                html += '<div class="todos-column"><div class="todos-header" style="color:#FF9800;">' + targetName + ' TODOs</div><ul class="todo-list">';
+                if (!todos.old || todos.old.length === 0) html += '<li class="todo-empty">No TODOs found in ' + targetName + '.</li>';
                 else todos.old.forEach(t => html += `<li class="todo-item todo-old">${{escapeHtml(t)}}</li>`);
                 html += '</ul></div>';
 
-                html += '<div class="todos-column"><div class="todos-header" style="color:#4CAF50;">Current TODOs</div><ul class="todo-list">';
+                html += '<div class="todos-column"><div class="todos-header" style="color:#4CAF50;">Local Changes TODOs</div><ul class="todo-list">';
                 if (!todos.curr || todos.curr.length === 0) html += '<li class="todo-empty">No TODOs found in the working tree.</li>';
                 else todos.curr.forEach(t => html += `<li class="todo-item todo-new">${{escapeHtml(t)}}</li>`);
                 html += '</ul></div></div>';
@@ -600,19 +605,6 @@ class DiffWindow:
             
             const isPdf = (visual.curr && visual.curr.toLowerCase().includes('.pdf')) || 
                           (visual.old && visual.old.toLowerCase().includes('.pdf'));
-
-            // Handle Schematic SVGs specific styling (prevent black-on-black text)
-            if (isSch && !isPdf) {{
-                newImgEl.style.backgroundColor = '#ffffff';
-                oldImgEl.style.backgroundColor = '#ffffff';
-                newImgEl.style.filter = 'none'; // Remove PCB contrast boost
-                oldImgEl.style.filter = 'none';
-            }} else {{
-                newImgEl.style.backgroundColor = '';
-                oldImgEl.style.backgroundColor = '';
-                newImgEl.style.filter = '';
-                oldImgEl.style.filter = '';
-            }}
 
             // Hide raw media tags initially
             imgWrapperOld.classList.add('hidden');
@@ -656,13 +648,13 @@ class DiffWindow:
                 statusTextEl.innerHTML = 'Showing: <strong style="color: #FF9800;">Overlay Mode</strong>';
             }} else if (showOld && visual.old) {{
                 wrapperOld.classList.remove('hidden');
-                statusTextEl.innerHTML = 'Showing: <strong style="color: #F44336;">Old Version</strong>';
+                statusTextEl.innerHTML = 'Showing: <strong style="color: #F44336;">' + targetName + '</strong>';
             }} else {{
                 if (visual.curr) {{
                     wrapperNew.classList.remove('hidden');
                     if (!visual.old && file.status !== "Unchanged") noOldMsgEl.classList.remove('hidden');
                 }}
-                statusTextEl.innerHTML = 'Showing: <strong style="color: #4CAF50;">Current Version</strong>';
+                statusTextEl.innerHTML = 'Showing: <strong style="color: #4CAF50;">Local Changes</strong>';
             }}
         }}
 

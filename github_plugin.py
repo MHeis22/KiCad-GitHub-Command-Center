@@ -140,7 +140,8 @@ class CommandCenterDialog(wx.Dialog):
             if not diffs:
                 wx.MessageBox(f"No local changes detected against {selected_target}.", "Info")
             else:
-                win = DiffWindow(diffs, summary)
+                # Pass the selected target name to the window for clear identification
+                win = DiffWindow(diffs, summary, target_name=selected_target)
                 win.Show()
         finally:
             if wx.IsBusy(): wx.EndBusyCursor()

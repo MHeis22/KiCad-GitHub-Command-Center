@@ -21,19 +21,35 @@ class DiffEngine:
         self.kicad_cli = "kicad-cli.exe" if sys.platform == "win32" else "kicad-cli"
         self.git_cmd = "git.exe" if sys.platform == "win32" else "git"
 
-    def get_git_status(self):
-        """Returns a dict of {filename: status_code} for modified files"""
+    def get_git_status(self, target="HEAD"):
+        """Returns a dict of {filename: status_code} for files that differ between target and working tree"""
         status_dict = {}
         try:
-            res = subprocess.run([self.git_cmd, "-C", self.project_dir, "status", "--porcelain"], 
+            # 1. Compare working tree to the specific target commit/branch
+            # This captures Modified (M), Deleted (D), and Added (A) relative to that target.
+            # Using 'git diff' instead of 'status' allows us to see changes relative to any point in history.
+            res = subprocess.run([self.git_cmd, "-C", self.project_dir, "diff", target, "--name-status"], 
                                  capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
             for line in res.stdout.split('\n'):
-                if len(line) > 3:
-                    code = line[0:2].strip()
+                if line.strip():
+                    # Format: STATUS\tPATH
+                    parts = line.split('\t')
+                    if len(parts) >= 2:
+                        code = parts[0].strip()
+                        fname = parts[1].strip().strip('"')
+                        status_dict[fname] = code
+
+            # 2. Also catch untracked files (??) which are not shown by 'git diff'
+            res_untracked = subprocess.run([self.git_cmd, "-C", self.project_dir, "status", "--porcelain"], 
+                                 capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
+            for line in res_untracked.stdout.split('\n'):
+                if line.startswith('??'):
                     fname = line[3:].strip().strip('"')
-                    status_dict[fname] = code
+                    # Only add if not already tracked/modified
+                    if fname not in status_dict:
+                        status_dict[fname] = '??'
         except Exception:
-            pass # Not a git repo or git error
+            pass
         return status_dict
 
     def get_git_targets(self):
@@ -138,25 +154,33 @@ class DiffEngine:
         """
         Scans for .kicad_pcb and .kicad_sch. Exports visual and logical files.
         """
-        git_status = self.get_git_status()
-        target_files = []
-        
-        for fname in os.listdir(self.project_dir):
-            if fname.endswith('.kicad_pcb') or fname.endswith('.kicad_sch'):
-                target_files.append(fname)
-                
-        diffs = []
-        summary_lines = []
-        
         # Resolve target to hash if it looks like "h (%s)" from get_git_targets
         actual_target = compare_target.split(' ')[0] if ' ' in compare_target else compare_target
+        
+        # Scoped status check relative to the selected target
+        git_status = self.get_git_status(target=actual_target)
+        
+        # Find all relevant KiCad files in the project unioned with those changed in git
+        all_potential = set()
+        for fname in os.listdir(self.project_dir):
+            if fname.endswith('.kicad_pcb') or fname.endswith('.kicad_sch'):
+                all_potential.add(fname)
+        for fname in git_status.keys():
+            if fname.endswith('.kicad_pcb') or fname.endswith('.kicad_sch'):
+                all_potential.add(fname)
+                
+        target_files = sorted(list(all_potential))
+        
+        diffs = []
+        summary_lines = []
         
         for fname in target_files:
             file_path = os.path.join(self.project_dir, fname)
             status_code = git_status.get(fname)
             
-            if status_code in ['M', 'AM']: status_text = "Modified"
+            if status_code in ['M', 'T']: status_text = "Modified"
             elif status_code in ['A', '??']: status_text = "New/Untracked"
+            elif status_code == 'D': status_text = "Deleted"
             else: status_text = "Unchanged"
             
             if status_text == "Unchanged" and not show_unchanged:
@@ -168,12 +192,10 @@ class DiffEngine:
             base_name = os.path.splitext(fname)[0]
             
             # Temporary storage for reference board from Git.
-            # MUST NOT start with a dot '.' otherwise glob ignores it.
             old_board_tmp = os.path.join(self.project_dir, f"tmp_git_old_{fname}")
             old_base_name = f"tmp_git_old_{base_name}"
             
             # Find the active project file to copy alongside the temp board 
-            # so KiCad correctly initializes the environment and doesn't render blanks.
             expected_pro = os.path.join(self.project_dir, f"{base_name}.kicad_pro")
             pro_path = expected_pro if os.path.exists(expected_pro) else None
             if not pro_path:
@@ -189,37 +211,38 @@ class DiffEngine:
             if is_pcb:
                 layers_to_export = self._get_pcb_layers(file_path)
             
-            visuals = {} # Map layer_name -> {curr: path, old: path}
+            visuals = {} 
             netlist_diff = ""
             bom_diff = ""
 
             try:
-                # 1. Export Git Reference version first if it exists
+                # 1. Export Git Reference version from the actual target
                 has_old = False
-                with open(old_board_tmp, "wb") as f:
-                    res = subprocess.run([self.git_cmd, "-C", self.project_dir, "show", f"{actual_target}:{fname}"],
-                                         stdout=f, stderr=subprocess.PIPE, creationflags=CREATE_NO_WINDOW)
-                if res.returncode == 0:
-                    has_old = True
-                    if pro_path:
-                        shutil.copy2(pro_path, old_pro_tmp)
+                # If status is 'A' (Added relative to target), it means the file didn't exist in target
+                if status_code != 'A' and status_code != '??':
+                    with open(old_board_tmp, "wb") as f:
+                        res = subprocess.run([self.git_cmd, "-C", self.project_dir, "show", f"{actual_target}:{fname}"],
+                                             stdout=f, stderr=subprocess.PIPE, creationflags=CREATE_NO_WINDOW)
+                    if res.returncode == 0:
+                        has_old = True
+                        if pro_path:
+                            shutil.copy2(pro_path, old_pro_tmp)
 
-                # 2. Iterate through layers (or just 'Default' for SCH)
+                # 2. Iterate through layers
                 for layer in layers_to_export:
-                    ext = "svg" # Always use SVG for both PCB and Schematic
+                    ext = "svg"
                     layer_safe = layer.replace('.', '_')
                     
                     curr_out = os.path.join(self.tmp_dir, f"curr_{safe_name}_{layer_safe}.{ext}")
                     old_out = os.path.join(self.tmp_dir, f"old_{safe_name}_{layer_safe}.{ext}")
                     
-                    # Pre-clean stale files/directories safely
+                    # Pre-clean stale files
                     for old_temp in glob.glob(curr_out.replace(".svg", "*.svg")) + glob.glob(old_out.replace(".svg", "*.svg")):
                         try:
                             if os.path.isdir(old_temp): shutil.rmtree(old_temp)
                             else: os.remove(old_temp)
                         except: pass
 
-                    # Command setup
                     cli_args = [self.kicad_cli, "pcb" if is_pcb else "sch", "export", ext]
                     if is_pcb:
                         active_layers = layer
@@ -227,28 +250,19 @@ class DiffEngine:
                             active_layers += ",Edge.Cuts"
                         cli_args.extend(["--layers", active_layers, "--exclude-drawing-sheet"])
                     else:
-                        # Schematics: DO NOT use --black-and-white (it crashes KiCad for SVG exports)
                         cli_args.extend(["--exclude-drawing-sheet"])
                     
-                    # Render Current
-                    res_curr = subprocess.run(cli_args + [file_path, "--output", curr_out], 
-                                   capture_output=True, cwd=self.project_dir, creationflags=CREATE_NO_WINDOW)
-                    
-                    if res_curr.returncode != 0:
-                        print(f"Error rendering current {fname}: {res_curr.stderr.decode('utf-8', errors='ignore')}")
-
-                    # Fix for KiCad Schematic SVGs: Find the explicit correct page.
-                    if not is_pcb:
-                        curr_out = self._find_correct_svg(curr_out, base_name)
-
-                    # Render Old
-                    if has_old:
-                        res_old = subprocess.run(cli_args + [old_board_tmp, "--output", old_out], 
+                    # Render Current (if not Deleted)
+                    if status_text != "Deleted":
+                        subprocess.run(cli_args + [file_path, "--output", curr_out], 
                                        capture_output=True, cwd=self.project_dir, creationflags=CREATE_NO_WINDOW)
-                        
-                        if res_old.returncode != 0:
-                            print(f"Error rendering old {fname}: {res_old.stderr.decode('utf-8', errors='ignore')}")
+                        if not is_pcb:
+                            curr_out = self._find_correct_svg(curr_out, base_name)
 
+                    # Render Old (if it exists in target)
+                    if has_old:
+                        subprocess.run(cli_args + [old_board_tmp, "--output", old_out], 
+                                       capture_output=True, cwd=self.project_dir, creationflags=CREATE_NO_WINDOW)
                         if not is_pcb:
                             old_out = self._find_correct_svg(old_out, old_base_name)
                     
@@ -261,8 +275,9 @@ class DiffEngine:
                 if not is_pcb:
                     curr_net = os.path.join(self.tmp_dir, f"curr_{safe_name}.net")
                     curr_bom = os.path.join(self.tmp_dir, f"curr_{safe_name}.csv")
-                    subprocess.run([self.kicad_cli, "sch", "export", "netlist", file_path, "--output", curr_net], capture_output=True, cwd=self.project_dir, creationflags=CREATE_NO_WINDOW)
-                    subprocess.run([self.kicad_cli, "sch", "export", "bom", file_path, "--output", curr_bom], capture_output=True, cwd=self.project_dir, creationflags=CREATE_NO_WINDOW)
+                    if status_text != "Deleted":
+                        subprocess.run([self.kicad_cli, "sch", "export", "netlist", file_path, "--output", curr_net], capture_output=True, cwd=self.project_dir, creationflags=CREATE_NO_WINDOW)
+                        subprocess.run([self.kicad_cli, "sch", "export", "bom", file_path, "--output", curr_bom], capture_output=True, cwd=self.project_dir, creationflags=CREATE_NO_WINDOW)
                     
                     if has_old:
                         old_net = os.path.join(self.tmp_dir, f"old_{safe_name}.net")
@@ -274,10 +289,8 @@ class DiffEngine:
                         bom_diff = self._generate_text_diff(old_bom, curr_bom)
 
                 # 4. Extract TODOs
-                curr_todos = self._extract_todos(file_path)
-                old_todos = []
-                if has_old:
-                    old_todos = self._extract_todos(old_board_tmp)
+                curr_todos = self._extract_todos(file_path) if status_text != "Deleted" else []
+                old_todos = self._extract_todos(old_board_tmp) if has_old else []
 
                 diffs.append({
                     "name": fname,
@@ -294,7 +307,6 @@ class DiffEngine:
             except Exception as e:
                 print(f"Error rendering {fname}: {e}")
             finally:
-                # Always clean up our temporary git files so we don't pollute the project dir
                 if os.path.exists(old_board_tmp):
                     try: os.remove(old_board_tmp)
                     except: pass
