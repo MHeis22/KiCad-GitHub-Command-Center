@@ -71,21 +71,30 @@ class DiffWindow:
         .controls {{ display: flex; align-items: center; gap: 10px; }}
         button {{ padding: 10px 20px; font-size: 14px; font-weight: bold; cursor: pointer; background: #007acc; color: white; border: none; border-radius: 4px; transition: 0.2s; }}
         button:hover {{ background: #005999; }}
+        button.btn-secondary {{ background: #555; }}
+        button.btn-secondary:hover {{ background: #777; }}
         .status-indicator {{ font-size: 15px; min-width: 200px; text-align: right; }}
         
         /* Document Viewers */
         #viewer-container {{ flex: 1; display: flex; justify-content: center; align-items: center; padding: 20px; overflow: hidden; position: relative; }}
         .board-viewer {{ width: 100%; height: 100%; border: none; background: white; border-radius: 4px; box-shadow: 0 4px 15px rgba(0,0,0,0.5); }}
+        
+        /* Absolute positioning is used to stack visuals perfectly when overlaying */
+        .pdf-viewer {{ position: absolute; width: calc(100% - 40px); height: calc(100% - 40px); }}
+        img.board-viewer {{ position: absolute; width: 100%; height: 100%; object-fit: contain; pointer-events: none; }} 
+
         .hidden {{ display: none !important; }}
+        
+        /* The Ghosting/Overlay Effect Class */
+        .overlay-mode {{ opacity: 0.8; mix-blend-mode: multiply; pointer-events: none; z-index: 10; }}
         
         /* Text Diff Viewer */
         #text-diff-container {{ flex: 1; padding: 20px; overflow-y: auto; background: #1e1e1e; font-family: 'Consolas', 'Courier New', monospace; font-size: 14px; white-space: pre-wrap; line-height: 1.5; }}
         .diff-line {{ padding: 0 5px; border-radius: 2px; }}
 
         /* Pan & Zoom Wrapper for SVGs */
-        #img-wrapper {{ width: 100%; height: 100%; display: flex; justify-content: center; align-items: center; transform-origin: 0 0; cursor: grab; }}
+        #img-wrapper {{ width: 100%; height: 100%; display: flex; justify-content: center; align-items: center; transform-origin: 0 0; cursor: grab; position: relative; }}
         #img-wrapper:active {{ cursor: grabbing; }}
-        img.board-viewer {{ object-fit: contain; pointer-events: none; }} 
         
         .no-data-msg {{ color: #888; font-style: italic; font-size: 1.2em; }}
     </style>
@@ -115,8 +124,9 @@ class DiffWindow:
                 
                 <div class="controls">
                     <div class="status-indicator" id="status-text">Select a file to view...</div>
-                    <button onclick="toggleDiff()" id="btn-toggle-diff">Toggle Old / New (Spacebar)</button>
-                    <button onclick="resetTransform()" id="reset-btn" class="hidden" style="background: #555;">Reset Zoom</button>
+                    <button onclick="toggleOverlay()" id="btn-toggle-overlay" class="hidden btn-secondary">Overlay (O)</button>
+                    <button onclick="toggleDiff()" id="btn-toggle-diff" class="hidden">Toggle Old / New (Space)</button>
+                    <button onclick="resetTransform()" id="reset-btn" class="hidden btn-secondary">Reset Zoom</button>
                 </div>
             </div>
         </div>
@@ -127,13 +137,13 @@ class DiffWindow:
             
             <!-- Custom Pan/Zoom wrapper for PCBs (SVGs) -->
             <div id="img-wrapper" class="hidden">
-                <img id="new-img" class="board-viewer hidden" src="" />
                 <img id="old-img" class="board-viewer hidden" src="" />
+                <img id="new-img" class="board-viewer hidden" src="" />
             </div>
 
             <!-- Native iframe for Schematics (PDFs) to utilize browser's PDF engine -->
-            <iframe id="new-pdf" class="board-viewer hidden" src=""></iframe>
-            <iframe id="old-pdf" class="board-viewer hidden" src=""></iframe>
+            <iframe id="old-pdf" class="board-viewer pdf-viewer hidden" src=""></iframe>
+            <iframe id="new-pdf" class="board-viewer pdf-viewer hidden" src=""></iframe>
         </div>
         
         <div id="text-diff-container" class="hidden">
@@ -145,6 +155,7 @@ class DiffWindow:
         const diffData = {diff_json};
         let activeIndex = -1;
         let showOld = false;
+        let overlayMode = false;
         let currentTab = 'visual'; // 'visual', 'netlist', 'bom'
 
         const fileListEl = document.getElementById('file-list');
@@ -162,6 +173,7 @@ class DiffWindow:
         const textDiffContainer = document.getElementById('text-diff-container');
         const viewToggles = document.getElementById('view-toggles');
         const btnToggleDiff = document.getElementById('btn-toggle-diff');
+        const btnToggleOverlay = document.getElementById('btn-toggle-overlay');
 
         // --- Pan & Zoom Logic for SVGs ---
         let scale = 1, panning = false, pointX = 0, pointY = 0, start = {{ x: 0, y: 0 }};
@@ -264,6 +276,7 @@ class DiffWindow:
         function selectFile(index) {{
             activeIndex = index;
             showOld = false; 
+            overlayMode = false;
             currentTab = 'visual'; // reset to visual on file change
             switchTab('visual'); 
             resetTransform(); 
@@ -294,6 +307,7 @@ class DiffWindow:
             if (currentTab !== 'visual') {{
                 viewerContainer.classList.add('hidden');
                 btnToggleDiff.classList.add('hidden');
+                btnToggleOverlay.classList.add('hidden');
                 resetBtn.classList.add('hidden');
                 textDiffContainer.classList.remove('hidden');
                 
@@ -312,7 +326,14 @@ class DiffWindow:
             // Handle Visual View
             textDiffContainer.classList.add('hidden');
             viewerContainer.classList.remove('hidden');
-            btnToggleDiff.classList.remove('hidden');
+            
+            if (file.oldUri && file.currUri) {{
+                btnToggleDiff.classList.remove('hidden');
+                btnToggleOverlay.classList.remove('hidden');
+            }} else {{
+                btnToggleDiff.classList.add('hidden');
+                btnToggleOverlay.classList.add('hidden');
+            }}
             
             const isPdf = (file.currUri && file.currUri.toLowerCase().includes('.pdf')) || 
                           (file.oldUri && file.oldUri.toLowerCase().includes('.pdf'));
@@ -325,7 +346,16 @@ class DiffWindow:
 
             if (isPdf) {{
                 resetBtn.classList.add('hidden');
-                if (showOld && file.oldUri) {{
+                newPdfEl.classList.remove('overlay-mode');
+                
+                if (overlayMode && file.oldUri && file.currUri) {{
+                    oldPdfEl.src = file.oldUri;
+                    newPdfEl.src = file.currUri;
+                    oldPdfEl.classList.remove('hidden');
+                    newPdfEl.classList.remove('hidden');
+                    newPdfEl.classList.add('overlay-mode');
+                    statusTextEl.innerHTML = 'Showing: <strong style="color: #FF9800;">Overlay Mode (Both)</strong>';
+                }} else if (showOld && file.oldUri) {{
                     oldPdfEl.src = file.oldUri;
                     oldPdfEl.classList.remove('hidden');
                     statusTextEl.innerHTML = 'Showing: <strong style="color: #F44336;">Old Version (Git HEAD)</strong>';
@@ -342,7 +372,16 @@ class DiffWindow:
             }} else {{
                 resetBtn.classList.remove('hidden');
                 imgWrapper.classList.remove('hidden');
-                if (showOld && file.oldUri) {{
+                newImgEl.classList.remove('overlay-mode');
+                
+                if (overlayMode && file.oldUri && file.currUri) {{
+                    oldImgEl.src = file.oldUri;
+                    newImgEl.src = file.currUri;
+                    oldImgEl.classList.remove('hidden');
+                    newImgEl.classList.remove('hidden');
+                    newImgEl.classList.add('overlay-mode');
+                    statusTextEl.innerHTML = 'Showing: <strong style="color: #FF9800;">Overlay Mode (Both)</strong>';
+                }} else if (showOld && file.oldUri) {{
                     oldImgEl.src = file.oldUri;
                     oldImgEl.classList.remove('hidden');
                     statusTextEl.innerHTML = 'Showing: <strong style="color: #F44336;">Old Version (Git HEAD)</strong>';
@@ -359,11 +398,22 @@ class DiffWindow:
             }}
         }}
 
+        function toggleOverlay() {{
+            if (activeIndex < 0 || currentTab !== 'visual') return;
+            const file = diffData[activeIndex];
+            if (file.oldUri && file.currUri) {{
+                overlayMode = !overlayMode;
+                if (overlayMode) showOld = false; // reset standard toggle if overlay goes on
+                renderView();
+            }}
+        }}
+
         function toggleDiff() {{
             if (activeIndex < 0 || currentTab !== 'visual') return;
             const file = diffData[activeIndex];
             if (file.oldUri) {{
                 showOld = !showOld;
+                overlayMode = false; // disable overlay if using spacebar toggle
                 renderView();
             }}
         }}
@@ -372,6 +422,9 @@ class DiffWindow:
             if (event.code === 'Space') {{
                 event.preventDefault(); 
                 toggleDiff();
+            }} else if (event.code === 'KeyO') {{
+                event.preventDefault();
+                toggleOverlay();
             }}
         }});
 
