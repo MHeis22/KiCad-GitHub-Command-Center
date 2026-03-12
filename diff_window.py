@@ -444,6 +444,9 @@ class DiffWindow:
 
         // --- View Initialization ---
         function init() {{
+            // Clear existing elements in case this is a saved HTML file being re-opened
+            fileListEl.innerHTML = '';
+            
             diffData.forEach((file, index) => {{
                 const li = document.createElement('li');
                 li.className = 'file-item';
@@ -452,6 +455,7 @@ class DiffWindow:
                 let color = "var(--text-muted)";
                 if (file.status === "Modified") color = "#F44336";
                 else if (file.status === "New/Untracked") color = "#4CAF50";
+                else if (file.status === "Deleted") color = "#999999";
 
                 li.innerHTML = `
                     <div class="file-name">${{escapeHtml(file.name)}}</div>
@@ -605,6 +609,19 @@ class DiffWindow:
             
             const isPdf = (visual.curr && visual.curr.toLowerCase().includes('.pdf')) || 
                           (visual.old && visual.old.toLowerCase().includes('.pdf'));
+
+            // Handle Schematic SVGs specific styling (prevent black-on-black text)
+            if (isSch && !isPdf) {{
+                newImgEl.style.backgroundColor = '#ffffff';
+                oldImgEl.style.backgroundColor = '#ffffff';
+                newImgEl.style.filter = 'none'; // Remove PCB contrast boost
+                oldImgEl.style.filter = 'none';
+            }} else {{
+                newImgEl.style.backgroundColor = '';
+                oldImgEl.style.backgroundColor = '';
+                newImgEl.style.filter = '';
+                oldImgEl.style.filter = '';
+            }}
 
             // Hide raw media tags initially
             imgWrapperOld.classList.add('hidden');
