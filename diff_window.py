@@ -49,63 +49,95 @@ class DiffWindow:
 <head>
     <title>KiCad Hardware Diff Viewer</title>
     <style>
-        body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #1e1e1e; color: #eee; margin: 0; display: flex; height: 100vh; overflow: hidden; }}
+        :root {{
+            --bg-main: #1e1e1e;
+            --bg-sidebar: #252526;
+            --bg-header: #2d2d30;
+            --border-color: #333;
+            --text-main: #eee;
+            --text-muted: #aaa;
+            --bg-hover: #2a2d2e;
+            --bg-active: #37373d;
+            --pcb-bg: #0a0a0a;
+            --diff-bg: #1e1e1e;
+            --diff-add: rgba(76, 175, 80, 0.15);
+            --diff-del: rgba(244, 67, 54, 0.15);
+        }}
+        
+        body.light-theme {{
+            --bg-main: #f5f5f5;
+            --bg-sidebar: #eaeaea;
+            --bg-header: #dcdcdc;
+            --border-color: #ccc;
+            --text-main: #222;
+            --text-muted: #666;
+            --bg-hover: #dfdfdf;
+            --bg-active: #cce4f7;
+            /* Keep PCB dark so bright KiCad traces are visible */
+            --pcb-bg: #0a0a0a; 
+            --diff-bg: #fafafa;
+            --diff-add: #e6ffed;
+            --diff-del: #ffeef0;
+        }}
+
+        body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: var(--bg-main); color: var(--text-main); margin: 0; display: flex; height: 100vh; overflow: hidden; transition: background 0.3s, color 0.3s; }}
         
         /* Sidebar Styles */
-        #sidebar {{ width: 280px; background: #252526; border-right: 1px solid #333; display: flex; flex-direction: column; }}
-        .sidebar-header {{ padding: 15px; background: #2d2d30; border-bottom: 1px solid #3e3e42; font-weight: bold; }}
+        #sidebar {{ width: 280px; background: var(--bg-sidebar); border-right: 1px solid var(--border-color); display: flex; flex-direction: column; transition: 0.3s; }}
+        .sidebar-header {{ padding: 15px; background: var(--bg-header); border-bottom: 1px solid var(--border-color); font-weight: bold; transition: 0.3s; }}
         .file-list {{ flex: 1; overflow-y: auto; list-style: none; padding: 0; margin: 0; }}
-        .file-item {{ padding: 12px 15px; border-bottom: 1px solid #333; cursor: pointer; transition: background 0.2s; }}
-        .file-item:hover {{ background: #2a2d2e; }}
-        .file-item.active {{ background: #37373d; border-left: 4px solid #007acc; }}
+        .file-item {{ padding: 12px 15px; border-bottom: 1px solid var(--border-color); cursor: pointer; transition: background 0.2s; }}
+        .file-item:hover {{ background: var(--bg-hover); }}
+        .file-item.active {{ background: var(--bg-active); border-left: 4px solid #007acc; }}
         .file-name {{ font-weight: bold; margin-bottom: 4px; word-break: break-all; }}
-        .file-status {{ font-size: 0.85em; color: #aaa; }}
+        .file-status {{ font-size: 0.85em; color: var(--text-muted); }}
         
         /* Main Content Styles */
-        #main-content {{ flex: 1; display: flex; flex-direction: column; background: #1e1e1e; }}
-        #topbar {{ padding: 15px; background: #252526; border-bottom: 1px solid #333; display: flex; justify-content: space-between; align-items: center; }}
+        #main-content {{ flex: 1; display: flex; flex-direction: column; background: var(--bg-main); transition: 0.3s; }}
+        #topbar {{ padding: 15px; background: var(--bg-sidebar); border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; transition: 0.3s; }}
         
-        .summary-box {{ padding: 10px 15px; background: #2d2d30; border-radius: 6px; font-size: 0.9em; max-width: 35%; max-height: 60px; overflow-y: auto; border: 1px solid #444; }}
+        .summary-box {{ padding: 10px 15px; background: var(--bg-header); border-radius: 6px; font-size: 0.9em; max-width: 35%; max-height: 60px; overflow-y: auto; border: 1px solid var(--border-color); transition: 0.3s; }}
         
         .controls-wrapper {{ display: flex; flex-direction: column; align-items: flex-end; gap: 10px; }}
         
         /* Selection Controls */
         .selection-row {{ display: flex; align-items: center; gap: 12px; }}
-        .layer-selector {{ display: flex; align-items: center; gap: 8px; background: #333; padding: 4px 10px; border-radius: 4px; border: 1px solid #555; font-size: 13px; }}
-        select {{ background: #444; color: white; border: 1px solid #666; padding: 3px 6px; border-radius: 3px; cursor: pointer; font-size: 13px; }}
+        .layer-selector {{ display: flex; align-items: center; gap: 8px; background: var(--bg-header); padding: 4px 10px; border-radius: 4px; border: 1px solid var(--border-color); font-size: 13px; }}
+        select {{ background: var(--bg-main); color: var(--text-main); border: 1px solid var(--border-color); padding: 3px 6px; border-radius: 3px; cursor: pointer; font-size: 13px; }}
         select:focus {{ outline: none; border-color: #007acc; }}
 
         .checkbox-label {{ display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 13px; user-select: none; }}
         .checkbox-label input {{ cursor: pointer; }}
 
         .view-toggle {{ display: flex; gap: 5px; }}
-        .view-btn {{ padding: 6px 12px; font-size: 13px; font-weight: bold; cursor: pointer; background: #333; color: #ccc; border: 1px solid #555; border-radius: 4px; transition: 0.2s; }}
+        .view-btn {{ padding: 6px 12px; font-size: 13px; font-weight: bold; cursor: pointer; background: var(--bg-main); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 4px; transition: 0.2s; }}
         .view-btn.active {{ background: #007acc; color: white; border-color: #007acc; }}
-        .view-btn:hover:not(.active) {{ background: #444; }}
+        .view-btn:hover:not(.active) {{ background: var(--bg-hover); }}
         
         .controls {{ display: flex; align-items: center; gap: 10px; }}
         button {{ padding: 8px 16px; font-size: 13px; font-weight: bold; cursor: pointer; background: #007acc; color: white; border: none; border-radius: 4px; transition: 0.2s; }}
         button:hover {{ background: #005999; }}
         button.btn-secondary {{ background: #555; }}
         button.btn-secondary:hover {{ background: #777; }}
-        .status-indicator {{ font-size: 14px; color: #ccc; min-width: 220px; text-align: right; }}
+        .status-indicator {{ font-size: 14px; color: var(--text-muted); min-width: 220px; text-align: right; }}
         
         /* Document Viewers */
         #viewer-container {{ flex: 1; display: flex; justify-content: center; align-items: center; padding: 20px; overflow: hidden; position: relative; }}
         
-        /* THE KEY FIX: Dark background for PCB area so white silk and copper colors pop */
+        .viewer-absolute {{ position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; justify-content: center; align-items: center; pointer-events: none; }}
+        .img-transform-wrapper {{ width: 100%; height: 100%; display: flex; justify-content: center; align-items: center; transform-origin: 0 0; position: absolute; }}
+        
         .board-viewer {{ 
             width: 100%; 
             height: 100%; 
             border: 1px solid #444; 
-            background: #0a0a0a; 
+            background: var(--pcb-bg); 
             border-radius: 4px; 
             box-shadow: 0 4px 25px rgba(0,0,0,0.8); 
         }}
         
-        .pdf-viewer {{ position: absolute; width: calc(100% - 40px); height: calc(100% - 40px); }}
+        .pdf-viewer {{ position: absolute; width: calc(100% - 40px); height: calc(100% - 40px); pointer-events: auto; }}
         
-        /* Copper Enhancement: Boosting contrast and saturation for "deep color" */
         img.board-viewer {{ 
             position: absolute; 
             width: 100%; 
@@ -117,12 +149,24 @@ class DiffWindow:
 
         .hidden {{ display: none !important; }}
         
+        /* Interactive Swipe Slider */
+        #swipe-slider-handle {{
+            position: absolute; top: 0; bottom: 0; left: 50%; width: 2px;
+            background: #00bcd4; cursor: ew-resize; z-index: 100;
+        }}
+        #swipe-slider-handle::after {{
+            content: '< >'; position: absolute; top: 50%; left: -14px;
+            width: 30px; height: 30px; background: #00bcd4; color: #fff;
+            border-radius: 50%; text-align: center; line-height: 30px;
+            font-weight: bold; transform: translateY(-50%); font-family: sans-serif;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.5); pointer-events: none;
+        }}
+
         /* The Ghosting/Overlay Effect Class */
         .overlay-mode {{ 
             opacity: 0.8; 
             background: transparent;
             mix-blend-mode: screen; 
-            pointer-events: none; 
             z-index: 10; 
         }}
         
@@ -136,24 +180,26 @@ class DiffWindow:
         }}
 
         /* Text Diff Viewer & TODOs */
-        #text-diff-container, #todos-container {{ flex: 1; padding: 20px; overflow-y: auto; background: #1e1e1e; font-family: 'Consolas', 'Courier New', monospace; font-size: 13px; white-space: pre-wrap; line-height: 1.5; }}
+        #text-diff-container, #todos-container {{ flex: 1; padding: 20px; overflow-y: auto; background: var(--diff-bg); font-family: 'Consolas', 'Courier New', monospace; font-size: 13px; white-space: pre-wrap; line-height: 1.5; transition: 0.3s; }}
         .diff-line {{ padding: 0 5px; border-radius: 2px; }}
+        
+        .diff-header {{ color: var(--text-muted); font-weight: bold; margin-top: 10px; }}
+        .diff-add {{ color: #4CAF50; background-color: var(--diff-add); }}
+        .diff-del {{ color: #F44336; background-color: var(--diff-del); }}
+        .diff-chunk {{ color: #00bcd4; font-weight: bold; }}
+        .diff-normal {{ color: var(--text-main); }}
 
         /* TODO List Styles */
         .todos-wrapper {{ display: flex; gap: 20px; height: 100%; }}
-        .todos-column {{ flex: 1; display: flex; flex-direction: column; background: #252526; border-radius: 6px; border: 1px solid #333; }}
-        .todos-header {{ padding: 12px 15px; background: #2d2d30; border-bottom: 1px solid #3e3e42; font-weight: bold; font-size: 14px; border-radius: 6px 6px 0 0; }}
+        .todos-column {{ flex: 1; display: flex; flex-direction: column; background: var(--bg-sidebar); border-radius: 6px; border: 1px solid var(--border-color); transition: 0.3s; }}
+        .todos-header {{ padding: 12px 15px; background: var(--bg-header); border-bottom: 1px solid var(--border-color); font-weight: bold; font-size: 14px; border-radius: 6px 6px 0 0; transition: 0.3s; }}
         .todo-list {{ list-style: none; padding: 15px; margin: 0; overflow-y: auto; flex: 1; }}
-        .todo-item {{ padding: 12px 15px; margin-bottom: 10px; border-radius: 4px; background: #2d2d30; border-left: 4px solid #444; font-family: 'Segoe UI', sans-serif; box-shadow: 0 2px 4px rgba(0,0,0,0.2); }}
+        .todo-item {{ padding: 12px 15px; margin-bottom: 10px; border-radius: 4px; background: var(--bg-header); border-left: 4px solid var(--text-muted); font-family: 'Segoe UI', sans-serif; box-shadow: 0 2px 4px rgba(0,0,0,0.2); transition: 0.3s; }}
         .todo-item.todo-new {{ border-left-color: #4CAF50; }}
         .todo-item.todo-old {{ border-left-color: #FF9800; }}
-        .todo-empty {{ color: #888; font-style: italic; padding: 10px 0; }}
+        .todo-empty {{ color: var(--text-muted); font-style: italic; padding: 10px 0; }}
 
-        /* Pan & Zoom Wrapper for SVGs */
-        #img-wrapper {{ width: 100%; height: 100%; display: flex; justify-content: center; align-items: center; transform-origin: 0 0; cursor: grab; position: relative; }}
-        #img-wrapper:active {{ cursor: grabbing; }}
-        
-        .no-data-msg {{ color: #888; font-style: italic; font-size: 1.2em; }}
+        .no-data-msg {{ color: var(--text-muted); font-style: italic; font-size: 1.2em; }}
     </style>
 </head>
 <body>
@@ -174,6 +220,9 @@ class DiffWindow:
             
             <div class="controls-wrapper">
                 <div class="selection-row">
+                    <button class="btn-secondary" onclick="toggleTheme()" title="Shortcut: T">Toggle Theme</button>
+                    <button class="btn-secondary" onclick="saveReport()">Save Report</button>
+                    
                     <label id="silk-toggle-cont" class="checkbox-label hidden">
                         <input type="checkbox" id="silk-checkbox" onchange="toggleSilk(this.checked)"> Show Silk
                     </label>
@@ -195,6 +244,7 @@ class DiffWindow:
                 
                 <div class="controls">
                     <div class="status-indicator" id="status-text">Select a file...</div>
+                    <button onclick="toggleSwipe()" id="btn-toggle-swipe" class="hidden btn-secondary">Swipe (W)</button>
                     <button onclick="toggleOverlay()" id="btn-toggle-overlay" class="hidden btn-secondary">Overlay (O)</button>
                     <button onclick="toggleDiff()" id="btn-toggle-diff" class="hidden">Toggle Old / New (Space)</button>
                     <button onclick="resetTransform()" id="reset-btn" class="hidden btn-secondary">Reset Zoom</button>
@@ -206,19 +256,28 @@ class DiffWindow:
             <p id="no-selection" class="no-data-msg">No file selected.</p>
             <p id="no-old-msg" class="no-data-msg hidden">No previous Git commit found for this layer.</p>
             
-            <div id="img-wrapper" class="hidden">
-                <img id="old-img" class="board-viewer hidden" src="" />
-                <img id="new-img" class="board-viewer hidden" src="" />
-                <!-- Silk Overlays -->
-                <img id="old-silk-img" class="board-viewer silk-overlay hidden" src="" />
-                <img id="new-silk-img" class="board-viewer silk-overlay hidden" src="" />
+            <!-- OLD Layer Wrapper -->
+            <div id="viewer-wrapper-old" class="viewer-absolute hidden">
+                <div id="img-wrapper-old" class="img-transform-wrapper hidden">
+                    <img id="old-img" class="board-viewer hidden" src="" />
+                    <img id="old-silk-img" class="board-viewer silk-overlay hidden" src="" />
+                </div>
+                <iframe id="old-pdf" class="board-viewer pdf-viewer hidden" src=""></iframe>
+                <iframe id="old-silk-pdf" class="board-viewer pdf-viewer silk-overlay hidden" src=""></iframe>
             </div>
 
-            <iframe id="old-pdf" class="board-viewer pdf-viewer hidden" src=""></iframe>
-            <iframe id="new-pdf" class="board-viewer pdf-viewer hidden" src=""></iframe>
-            <!-- Silk PDFs -->
-            <iframe id="old-silk-pdf" class="board-viewer pdf-viewer silk-overlay hidden" src=""></iframe>
-            <iframe id="new-silk-pdf" class="board-viewer pdf-viewer silk-overlay hidden" src=""></iframe>
+            <!-- NEW Layer Wrapper -->
+            <div id="viewer-wrapper-new" class="viewer-absolute hidden">
+                <div id="img-wrapper-new" class="img-transform-wrapper hidden">
+                    <img id="new-img" class="board-viewer hidden" src="" />
+                    <img id="new-silk-img" class="board-viewer silk-overlay hidden" src="" />
+                </div>
+                <iframe id="new-pdf" class="board-viewer pdf-viewer hidden" src=""></iframe>
+                <iframe id="new-silk-pdf" class="board-viewer pdf-viewer silk-overlay hidden" src=""></iframe>
+            </div>
+            
+            <!-- Wipe Slider Handle -->
+            <div id="swipe-slider-handle" class="hidden"></div>
         </div>
         
         <div id="text-diff-container" class="hidden">
@@ -235,11 +294,20 @@ class DiffWindow:
         let activeIndex = -1;
         let showOld = false;
         let overlayMode = false;
+        let swipeMode = false;
+        let swipePos = 50; // percentage
+        
         let currentTab = 'visual'; 
         let currentLayer = 'Default';
         let showSilk = false;
 
         const fileListEl = document.getElementById('file-list');
+        
+        const wrapperOld = document.getElementById('viewer-wrapper-old');
+        const wrapperNew = document.getElementById('viewer-wrapper-new');
+        const imgWrapperOld = document.getElementById('img-wrapper-old');
+        const imgWrapperNew = document.getElementById('img-wrapper-new');
+        
         const newImgEl = document.getElementById('new-img');
         const oldImgEl = document.getElementById('old-img');
         const newSilkImgEl = document.getElementById('new-silk-img');
@@ -250,7 +318,7 @@ class DiffWindow:
         const newSilkPdfEl = document.getElementById('new-silk-pdf');
         const oldSilkPdfEl = document.getElementById('old-silk-pdf');
 
-        const imgWrapper = document.getElementById('img-wrapper');
+        const sliderHandle = document.getElementById('swipe-slider-handle');
         const statusTextEl = document.getElementById('status-text');
         const noSelectionEl = document.getElementById('no-selection');
         const noOldMsgEl = document.getElementById('no-old-msg');
@@ -264,14 +332,37 @@ class DiffWindow:
         const textDiffContainer = document.getElementById('text-diff-container');
         const todosContainer = document.getElementById('todos-container');
         const viewToggles = document.getElementById('view-toggles');
+        
         const btnToggleDiff = document.getElementById('btn-toggle-diff');
         const btnToggleOverlay = document.getElementById('btn-toggle-overlay');
+        const btnToggleSwipe = document.getElementById('btn-toggle-swipe');
 
-        // --- Pan & Zoom Logic for SVGs ---
+        // --- Theme Toggle & Save Report ---
+        function toggleTheme() {{
+            document.body.classList.toggle('light-theme');
+        }}
+
+        function saveReport() {{
+            const docHtml = '<!DOCTYPE html>\\n<html lang="en">' + document.documentElement.innerHTML + '</html>';
+            const blob = new Blob([docHtml], {{ type: 'text/html' }});
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'kicad_diff_report.html';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }}
+
+        // --- Pan & Zoom & Swipe Slider Logic ---
         let scale = 1, panning = false, pointX = 0, pointY = 0, start = {{ x: 0, y: 0 }};
+        let draggingSlider = false;
 
         function setTransform() {{
-            imgWrapper.style.transform = 'translate(' + pointX + 'px, ' + pointY + 'px) scale(' + scale + ')';
+            const tf = 'translate(' + pointX + 'px, ' + pointY + 'px) scale(' + scale + ')';
+            imgWrapperOld.style.transform = tf;
+            imgWrapperNew.style.transform = tf;
         }}
 
         function resetTransform() {{
@@ -279,18 +370,36 @@ class DiffWindow:
             setTransform();
         }}
 
+        sliderHandle.addEventListener('mousedown', (e) => {{
+            draggingSlider = true;
+            e.stopPropagation();
+            e.preventDefault();
+        }});
+        
+        window.addEventListener('mouseup', () => {{
+            draggingSlider = false;
+            panning = false;
+        }});
+
         viewerContainer.onmousedown = function (e) {{
-            if (imgWrapper.classList.contains('hidden')) return; 
+            if (imgWrapperOld.classList.contains('hidden') && imgWrapperNew.classList.contains('hidden')) return; 
             e.preventDefault();
             start = {{ x: e.clientX - pointX, y: e.clientY - pointY }};
             panning = true;
         }};
 
-        viewerContainer.onmouseup = function (e) {{ panning = false; }};
-        viewerContainer.onmouseleave = function (e) {{ panning = false; }};
+        viewerContainer.onmouseleave = function (e) {{ panning = false; draggingSlider = false; }};
 
         viewerContainer.onmousemove = function (e) {{
-            if (!panning || imgWrapper.classList.contains('hidden')) return;
+            if (draggingSlider && swipeMode) {{
+                const rect = viewerContainer.getBoundingClientRect();
+                swipePos = ((e.clientX - rect.left) / rect.width) * 100;
+                swipePos = Math.max(0, Math.min(100, swipePos));
+                sliderHandle.style.left = swipePos + '%';
+                wrapperNew.style.clipPath = `polygon(0 0, ${{swipePos}}% 0, ${{swipePos}}% 100%, 0 100%)`;
+                return;
+            }}
+            if (!panning || (imgWrapperOld.classList.contains('hidden') && imgWrapperNew.classList.contains('hidden'))) return;
             e.preventDefault();
             pointX = (e.clientX - start.x);
             pointY = (e.clientY - start.y);
@@ -298,7 +407,7 @@ class DiffWindow:
         }};
 
         viewerContainer.onwheel = function (e) {{
-            if (imgWrapper.classList.contains('hidden')) return; 
+            if (imgWrapperOld.classList.contains('hidden') && imgWrapperNew.classList.contains('hidden')) return; 
             e.preventDefault();
             let xs = (e.clientX - pointX) / scale;
             let ys = (e.clientY - pointY) / scale;
@@ -320,19 +429,11 @@ class DiffWindow:
             if (!diffText || diffText.trim() === '') return '';
             return diffText.split('\\n').map(line => {{
                 let safeLine = escapeHtml(line);
-                if (safeLine.startsWith('+++') || safeLine.startsWith('---')) {{
-                    return `<div class="diff-line" style="color: #999; font-weight: bold; margin-top: 10px;">${{safeLine}}</div>`;
-                }}
-                if (safeLine.startsWith('+')) {{
-                    return `<div class="diff-line" style="color: #4CAF50; background-color: rgba(76, 175, 80, 0.15);">${{safeLine}}</div>`;
-                }}
-                if (safeLine.startsWith('-')) {{
-                    return `<div class="diff-line" style="color: #F44336; background-color: rgba(244, 67, 54, 0.15);">${{safeLine}}</div>`;
-                }}
-                if (safeLine.startsWith('@@')) {{
-                    return `<div class="diff-line" style="color: #00bcd4; font-weight: bold;">${{safeLine}}</div>`;
-                }}
-                return `<div class="diff-line" style="color: #ccc;">${{safeLine}}</div>`;
+                if (safeLine.startsWith('+++') || safeLine.startsWith('---')) return `<div class="diff-line diff-header">${{safeLine}}</div>`;
+                if (safeLine.startsWith('+')) return `<div class="diff-line diff-add">${{safeLine}}</div>`;
+                if (safeLine.startsWith('-')) return `<div class="diff-line diff-del">${{safeLine}}</div>`;
+                if (safeLine.startsWith('@@')) return `<div class="diff-line diff-chunk">${{safeLine}}</div>`;
+                return `<div class="diff-line diff-normal">${{safeLine}}</div>`;
             }}).join('');
         }}
 
@@ -343,7 +444,7 @@ class DiffWindow:
                 li.className = 'file-item';
                 li.onclick = () => selectFile(index);
                 
-                let color = "#aaa";
+                let color = "var(--text-muted)";
                 if (file.status === "Modified") color = "#F44336";
                 else if (file.status === "New/Untracked") color = "#4CAF50";
 
@@ -366,6 +467,7 @@ class DiffWindow:
             const file = diffData[index];
             showOld = false; 
             overlayMode = false;
+            swipeMode = false;
             
             // Populate Layer Dropdown
             layerDrop.innerHTML = '';
@@ -447,11 +549,12 @@ class DiffWindow:
             if (currentTab === 'netlist' || currentTab === 'bom') {{
                 btnToggleDiff.classList.add('hidden');
                 btnToggleOverlay.classList.add('hidden');
+                btnToggleSwipe.classList.add('hidden');
                 resetBtn.classList.add('hidden');
                 textDiffContainer.classList.remove('hidden');
                 
                 const diffContent = currentTab === 'netlist' ? file.netlistDiff : file.bomDiff;
-                textDiffContainer.innerHTML = diffContent ? formatDiff(diffContent) : `<span style="color:#888;">No logic changes found.</span>`;
+                textDiffContainer.innerHTML = diffContent ? formatDiff(diffContent) : `<span style="color:var(--text-muted);">No logic changes found.</span>`;
                 statusTextEl.innerHTML = `Showing: <strong>${{currentTab === 'netlist' ? 'Netlist Text Diff' : 'BOM Text Diff'}}</strong>`;
                 return;
             }}
@@ -460,32 +563,22 @@ class DiffWindow:
             if (currentTab === 'todos') {{
                 btnToggleDiff.classList.add('hidden');
                 btnToggleOverlay.classList.add('hidden');
+                btnToggleSwipe.classList.add('hidden');
                 resetBtn.classList.add('hidden');
                 todosContainer.classList.remove('hidden');
                 
                 const todos = file.todos || {{curr: [], old: []}};
-                
                 let html = '<div class="todos-wrapper">';
                 
-                // Old TODOs Column
                 html += '<div class="todos-column"><div class="todos-header" style="color:#FF9800;">Previous TODOs</div><ul class="todo-list">';
-                if (!todos.old || todos.old.length === 0) {{
-                    html += '<li class="todo-empty">No TODOs found in the previous commit.</li>';
-                }} else {{
-                    todos.old.forEach(t => html += `<li class="todo-item todo-old">${{escapeHtml(t)}}</li>`);
-                }}
+                if (!todos.old || todos.old.length === 0) html += '<li class="todo-empty">No TODOs found in the previous commit.</li>';
+                else todos.old.forEach(t => html += `<li class="todo-item todo-old">${{escapeHtml(t)}}</li>`);
                 html += '</ul></div>';
 
-                // Current TODOs Column
                 html += '<div class="todos-column"><div class="todos-header" style="color:#4CAF50;">Current TODOs</div><ul class="todo-list">';
-                if (!todos.curr || todos.curr.length === 0) {{
-                    html += '<li class="todo-empty">No TODOs found in the working tree.</li>';
-                }} else {{
-                    todos.curr.forEach(t => html += `<li class="todo-item todo-new">${{escapeHtml(t)}}</li>`);
-                }}
-                html += '</ul></div>';
-                
-                html += '</div>';
+                if (!todos.curr || todos.curr.length === 0) html += '<li class="todo-empty">No TODOs found in the working tree.</li>';
+                else todos.curr.forEach(t => html += `<li class="todo-item todo-new">${{escapeHtml(t)}}</li>`);
+                html += '</ul></div></div>';
 
                 todosContainer.innerHTML = html;
                 statusTextEl.innerHTML = `Showing: <strong>Design TODOs</strong>`;
@@ -498,90 +591,111 @@ class DiffWindow:
             if (visual.old && visual.curr) {{
                 btnToggleDiff.classList.remove('hidden');
                 btnToggleOverlay.classList.remove('hidden');
+                btnToggleSwipe.classList.remove('hidden');
             }} else {{
                 btnToggleDiff.classList.add('hidden');
                 btnToggleOverlay.classList.add('hidden');
+                btnToggleSwipe.classList.add('hidden');
             }}
             
             const isPdf = (visual.curr && visual.curr.toLowerCase().includes('.pdf')) || 
                           (visual.old && visual.old.toLowerCase().includes('.pdf'));
 
-            imgWrapper.classList.add('hidden');
+            // Hide raw media tags initially
+            imgWrapperOld.classList.add('hidden');
+            imgWrapperNew.classList.add('hidden');
             [newImgEl, oldImgEl, newSilkImgEl, oldSilkImgEl, newPdfEl, oldPdfEl, newSilkPdfEl, oldSilkPdfEl].forEach(e => e.classList.add('hidden'));
 
             if (isPdf) {{
                 resetBtn.classList.add('hidden');
-                newPdfEl.classList.remove('overlay-mode');
-                
-                if (overlayMode && visual.old && visual.curr) {{
-                    oldPdfEl.src = visual.old; newPdfEl.src = visual.curr;
-                    oldPdfEl.classList.remove('hidden'); newPdfEl.classList.remove('hidden');
-                    newPdfEl.classList.add('overlay-mode');
-                    statusTextEl.innerHTML = 'Showing: <strong style="color: #FF9800;">Overlay Mode</strong>';
-                }} else if (showOld && visual.old) {{
-                    oldPdfEl.src = visual.old; oldPdfEl.classList.remove('hidden');
-                    if (silkVisual && silkVisual.old) {{ oldSilkPdfEl.src = silkVisual.old; oldSilkPdfEl.classList.remove('hidden'); }}
-                    statusTextEl.innerHTML = 'Showing: <strong style="color: #F44336;">Old Version</strong>';
-                }} else {{
-                    if (visual.curr) {{
-                        newPdfEl.src = visual.curr; newPdfEl.classList.remove('hidden');
-                        if (silkVisual && silkVisual.curr) {{ newSilkPdfEl.src = silkVisual.curr; newSilkPdfEl.classList.remove('hidden'); }}
-                        if (!visual.old && file.status !== "Unchanged") noOldMsgEl.classList.remove('hidden');
-                    }}
-                    statusTextEl.innerHTML = 'Showing: <strong style="color: #4CAF50;">Current Version</strong>';
-                }}
+                if (visual.old) {{ oldPdfEl.src = visual.old; oldPdfEl.classList.remove('hidden'); }}
+                if (visual.curr) {{ newPdfEl.src = visual.curr; newPdfEl.classList.remove('hidden'); }}
+                if (silkVisual && silkVisual.old) {{ oldSilkPdfEl.src = silkVisual.old; oldSilkPdfEl.classList.remove('hidden'); }}
+                if (silkVisual && silkVisual.curr) {{ newSilkPdfEl.src = silkVisual.curr; newSilkPdfEl.classList.remove('hidden'); }}
             }} else {{
                 resetBtn.classList.remove('hidden');
-                imgWrapper.classList.remove('hidden');
-                newImgEl.classList.remove('overlay-mode');
-                
-                if (overlayMode && visual.old && visual.curr) {{
-                    oldImgEl.src = visual.old; newImgEl.src = visual.curr;
-                    oldImgEl.classList.remove('hidden'); newImgEl.classList.remove('hidden');
-                    newImgEl.classList.add('overlay-mode');
-                    statusTextEl.innerHTML = 'Showing: <strong style="color: #FF9800;">Overlay Mode</strong>';
-                }} else if (showOld && visual.old) {{
-                    oldImgEl.src = visual.old; oldImgEl.classList.remove('hidden');
-                    if (silkVisual && silkVisual.old) {{ oldSilkImgEl.src = silkVisual.old; oldSilkImgEl.classList.remove('hidden'); }}
-                    statusTextEl.innerHTML = 'Showing: <strong style="color: #F44336;">Old Version</strong>';
-                }} else {{
-                    if (visual.curr) {{
-                        newImgEl.src = visual.curr; newImgEl.classList.remove('hidden');
-                        if (silkVisual && silkVisual.curr) {{ newSilkImgEl.src = silkVisual.curr; newSilkImgEl.classList.remove('hidden'); }}
-                        if (!visual.old && file.status !== "Unchanged") noOldMsgEl.classList.remove('hidden');
-                    }}
-                    statusTextEl.innerHTML = 'Showing: <strong style="color: #4CAF50;">Current Version</strong>';
+                imgWrapperOld.classList.remove('hidden');
+                imgWrapperNew.classList.remove('hidden');
+                if (visual.old) {{ oldImgEl.src = visual.old; oldImgEl.classList.remove('hidden'); }}
+                if (visual.curr) {{ newImgEl.src = visual.curr; newImgEl.classList.remove('hidden'); }}
+                if (silkVisual && silkVisual.old) {{ oldSilkImgEl.src = silkVisual.old; oldSilkImgEl.classList.remove('hidden'); }}
+                if (silkVisual && silkVisual.curr) {{ newSilkImgEl.src = silkVisual.curr; newSilkImgEl.classList.remove('hidden'); }}
+            }}
+
+            // Setup mode display
+            wrapperOld.classList.add('hidden');
+            wrapperNew.classList.add('hidden');
+            wrapperNew.classList.remove('overlay-mode');
+            wrapperNew.style.clipPath = '';
+            sliderHandle.classList.add('hidden');
+
+            if (swipeMode && visual.old && visual.curr) {{
+                wrapperOld.classList.remove('hidden');
+                wrapperNew.classList.remove('hidden');
+                sliderHandle.classList.remove('hidden');
+                wrapperNew.style.clipPath = `polygon(0 0, ${{swipePos}}% 0, ${{swipePos}}% 100%, 0 100%)`;
+                sliderHandle.style.left = swipePos + '%';
+                statusTextEl.innerHTML = 'Showing: <strong style="color: #00bcd4;">Swipe Mode</strong>';
+            }} else if (overlayMode && visual.old && visual.curr) {{
+                wrapperOld.classList.remove('hidden');
+                wrapperNew.classList.remove('hidden');
+                wrapperNew.classList.add('overlay-mode');
+                statusTextEl.innerHTML = 'Showing: <strong style="color: #FF9800;">Overlay Mode</strong>';
+            }} else if (showOld && visual.old) {{
+                wrapperOld.classList.remove('hidden');
+                statusTextEl.innerHTML = 'Showing: <strong style="color: #F44336;">Old Version</strong>';
+            }} else {{
+                if (visual.curr) {{
+                    wrapperNew.classList.remove('hidden');
+                    if (!visual.old && file.status !== "Unchanged") noOldMsgEl.classList.remove('hidden');
                 }}
+                statusTextEl.innerHTML = 'Showing: <strong style="color: #4CAF50;">Current Version</strong>';
+            }}
+        }}
+
+        function toggleSwipe() {{
+            if (activeIndex < 0 || currentTab !== 'visual') return;
+            const visual = diffData[activeIndex].visuals[currentLayer];
+            if (visual && visual.old && visual.curr) {{
+                swipeMode = !swipeMode;
+                if (swipeMode) {{ overlayMode = false; showOld = false; }}
+                renderView();
             }}
         }}
 
         function toggleOverlay() {{
             if (activeIndex < 0 || currentTab !== 'visual') return;
-            const file = diffData[activeIndex];
-            const visual = file.visuals[currentLayer];
+            const visual = diffData[activeIndex].visuals[currentLayer];
             if (visual && visual.old && visual.curr) {{
                 overlayMode = !overlayMode;
-                if (overlayMode) showOld = false; 
+                if (overlayMode) {{ swipeMode = false; showOld = false; }}
                 renderView();
             }}
         }}
 
         function toggleDiff() {{
             if (activeIndex < 0 || currentTab !== 'visual') return;
-            const file = diffData[activeIndex];
-            const visual = file.visuals[currentLayer];
+            const visual = diffData[activeIndex].visuals[currentLayer];
             if (visual && visual.old) {{
                 showOld = !showOld;
                 overlayMode = false;
+                swipeMode = false;
                 renderView();
             }}
         }}
 
         document.addEventListener('keydown', function(event) {{
+            // Ignore keystrokes if focused on select or inputs
+            if(document.activeElement.tagName === 'SELECT' || document.activeElement.tagName === 'INPUT') return;
+
             if (event.code === 'Space') {{
                 event.preventDefault(); toggleDiff();
             }} else if (event.code === 'KeyO') {{
                 event.preventDefault(); toggleOverlay();
+            }} else if (event.code === 'KeyW') {{
+                event.preventDefault(); toggleSwipe();
+            }} else if (event.code === 'KeyT') {{
+                event.preventDefault(); toggleTheme();
             }} else if (event.key >= '1' && event.key <= '9') {{
                 const idx = parseInt(event.key) - 1;
                 if (layerDrop.options[idx]) {{
