@@ -21,6 +21,17 @@ class DiffEngine:
         self.kicad_cli = "kicad-cli.exe" if sys.platform == "win32" else "kicad-cli"
         self.git_cmd = "git.exe" if sys.platform == "win32" else "git"
 
+    def get_kicad_version(self):
+        """Fetches the installed KiCad version via CLI."""
+        try:
+            res = subprocess.run([self.kicad_cli, "--version"], capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
+            version_str = res.stdout.strip()
+            if version_str:
+                return version_str
+        except Exception:
+            pass
+        return "Unknown KiCad Version"
+
     def get_git_status(self, target="HEAD"):
         """Returns a dict of {filename: status_code} for files that differ between target and working tree"""
         status_dict = {}

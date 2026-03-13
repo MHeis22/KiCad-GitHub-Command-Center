@@ -20,10 +20,11 @@ def is_git_installed():
         return False
 
 class CommitDialog(wx.Dialog):
-    def __init__(self, parent, changed_files):
-        # Increased size to comfortably fit the check list box
-        super().__init__(parent, title="Commit Changes", size=(450, 450))
+    def __init__(self, parent, changed_files, kicad_version="Unknown KiCad Version"):
+        # Increased size to comfortably fit the check list box and version checkbox
+        super().__init__(parent, title="Commit Changes", size=(450, 500))
         self.changed_files = changed_files
+        self.kicad_version = kicad_version
         
         vbox = wx.BoxSizer(wx.VERTICAL)
         
@@ -44,6 +45,14 @@ class CommitDialog(wx.Dialog):
         self.tc_branch = wx.TextCtrl(self)
         vbox.Add(self.tc_branch, flag=wx.EXPAND|wx.LEFT|wx.RIGHT|wx.BOTTOM, border=10)
         
+        # --- KiCad Version Checkbox ---
+        self.cb_version = wx.CheckBox(self, label=f"Include KiCad Version in commit message")
+        if self.kicad_version and self.kicad_version != "Unknown KiCad Version":
+            self.cb_version.SetValue(True)
+        else:
+            self.cb_version.SetValue(False)
+        vbox.Add(self.cb_version, flag=wx.LEFT|wx.RIGHT|wx.BOTTOM, border=10)
+
         btn_sizer = wx.StdDialogButtonSizer()
         btn_ok = wx.Button(self, wx.ID_OK)
         btn_cancel = wx.Button(self, wx.ID_CANCEL)
@@ -58,7 +67,13 @@ class CommitDialog(wx.Dialog):
         return [self.changed_files[i] for i in range(self.clb_files.GetCount()) if self.clb_files.IsChecked(i)]
 
     def get_message(self):
-        return self.tc_msg.GetValue().strip()
+        msg = self.tc_msg.GetValue().strip()
+        if self.cb_version.IsChecked() and self.kicad_version and self.kicad_version != "Unknown KiCad Version":
+            if msg:
+                msg += f"\n\n[KiCad Version: {self.kicad_version}]"
+            else:
+                msg = f"[KiCad Version: {self.kicad_version}]"
+        return msg
 
     def get_branch(self):
         return self.tc_branch.GetValue().strip()
@@ -70,6 +85,7 @@ class CommandCenterDialog(wx.Dialog):
         self.project_dir = project_dir
         self.git_cmd = "git.exe" if os.name == "nt" else "git"
         self.engine = DiffEngine(self.project_dir)
+        self.kicad_version = self.engine.get_kicad_version()
         
         self.panel = wx.Panel(self)
         self.main_vbox = wx.BoxSizer(wx.VERTICAL)
@@ -364,7 +380,7 @@ class CommandCenterDialog(wx.Dialog):
             if not diffs:
                 wx.MessageBox(f"No local changes detected against {selected_target}.", "Info")
             else:
-                win = DiffWindow(diffs, summary, target_name=selected_target)
+                win = DiffWindow(diffs, summary, target_name=selected_target, kicad_version=self.kicad_version)
                 win.Show()
         finally:
             if wx.IsBusy(): wx.EndBusyCursor()
@@ -380,7 +396,7 @@ class CommandCenterDialog(wx.Dialog):
             if not diffs:
                 wx.MessageBox(f"No schematic or PCB files found to render.", "Info")
             else:
-                win = DiffWindow(diffs, summary, target_name=selected_target)
+                win = DiffWindow(diffs, summary, target_name=selected_target, kicad_version=self.kicad_version)
                 win.Show()
         finally:
             if wx.IsBusy(): wx.EndBusyCursor()
@@ -433,7 +449,7 @@ class CommandCenterDialog(wx.Dialog):
             wx.MessageBox("No changes detected. Workspace is clean.", "Info")
             return
 
-        dlg = CommitDialog(self, changed_files)
+        dlg = CommitDialog(self, changed_files, kicad_version=self.kicad_version)
         if dlg.ShowModal() == wx.ID_OK:
             msg = dlg.get_message()
             branch = dlg.get_branch()

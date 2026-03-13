@@ -6,7 +6,7 @@ import json
 import base64
 
 class DiffWindow:
-    def __init__(self, diffs, summary_text, target_name="HEAD"):
+    def __init__(self, diffs, summary_text, target_name="HEAD", kicad_version="Unknown KiCad Version"):
         """
         diffs expects a list of dicts: 
         [{'name': '...', 'status': '...', 'visuals': {...}, 'bom_data': {'curr':{}, 'old':{}}}]
@@ -14,6 +14,7 @@ class DiffWindow:
         self.diffs = diffs
         self.summary_text = summary_text.replace('\n', '<br>')
         self.target_name = target_name
+        self.kicad_version = kicad_version
 
     def _get_data_uri(self, file_path):
         """Reads a file and returns a Base64 encoded Data URI for embedding."""
@@ -95,6 +96,23 @@ class DiffWindow:
             --diff-del: #ffeef0;
             --diff-mod: #fff5e6;
         }}
+
+        /* --- Schematic Overlay & Version Watermark --- */
+        #version-watermark {{
+            position: fixed;
+            bottom: 15px;
+            right: 20px;
+            font-size: 15px;
+            color: var(--text-muted);
+            opacity: 0.6;
+            z-index: 1000;
+            pointer-events: none;
+            font-family: 'Consolas', 'Courier New', monospace;
+        }}
+        .sch-overlay-mode {{ opacity: 1.0; mix-blend-mode: screen; z-index: 10; background: transparent; }}
+        .sch-diff-old {{ filter: invert(1) sepia(100%) saturate(500%) hue-rotate(-50deg) brightness(0.9) !important; mix-blend-mode: normal; }}
+        .sch-diff-new {{ filter: invert(1) sepia(100%) saturate(500%) hue-rotate(80deg) brightness(0.9) !important; mix-blend-mode: normal; }}
+        .sch-diff-container {{ background: #111 !important; }}
 
         body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: var(--bg-main); color: var(--text-main); margin: 0; display: flex; height: 100vh; overflow: hidden; transition: background 0.3s, color 0.3s; overscroll-behavior: none; }}
         
@@ -293,6 +311,8 @@ class DiffWindow:
         <div id="bom-container" class="hidden"></div>
         <div id="todos-container" class="hidden"></div>
         <div id="health-container" class="hidden"></div>
+        
+        <div id="version-watermark">{self.kicad_version}</div>
     </div>
 
     <script>
@@ -792,12 +812,18 @@ class DiffWindow:
             // --- Visual View ---
             viewerContainer.classList.remove('hidden');
             
+            // Clear schematic overlay classes
+            wrapperNew.classList.remove('overlay-mode', 'sch-overlay-mode');
+            oldImgEl.classList.remove('sch-diff-old');
+            newImgEl.classList.remove('sch-diff-new');
+            viewerContainer.classList.remove('sch-diff-container');
+            
             if (visual.old && visual.curr) {{ btnToggleDiff.classList.remove('hidden'); btnToggleOverlay.classList.remove('hidden'); btnToggleSwipe.classList.remove('hidden'); }} 
             else {{ btnToggleDiff.classList.add('hidden'); btnToggleOverlay.classList.add('hidden'); btnToggleSwipe.classList.add('hidden'); }}
             
             const isPdf = (visual.curr && visual.curr.startsWith('data:application/pdf')) || (visual.old && visual.old.startsWith('data:application/pdf'));
 
-            if (isSch && !isPdf) {{
+            if (isSch && !isPdf && !overlayMode) {{
                 newImgEl.style.backgroundColor = '#ffffff'; oldImgEl.style.backgroundColor = '#ffffff';
                 newImgEl.style.filter = 'none'; oldImgEl.style.filter = 'none';
             }} else {{
@@ -824,14 +850,24 @@ class DiffWindow:
             }}
 
             wrapperOld.classList.add('hidden'); wrapperNew.classList.add('hidden');
-            wrapperNew.classList.remove('overlay-mode'); wrapperNew.style.clipPath = ''; sliderHandle.classList.add('hidden');
+            wrapperNew.style.clipPath = ''; sliderHandle.classList.add('hidden');
 
             if (swipeMode && visual.old && visual.curr) {{
                 wrapperOld.classList.remove('hidden'); wrapperNew.classList.remove('hidden'); sliderHandle.classList.remove('hidden');
                 wrapperNew.style.clipPath = `polygon(0 0, ${{swipePos}}% 0, ${{swipePos}}% 100%, 0 100%)`; sliderHandle.style.left = swipePos + '%';
                 statusTextEl.innerHTML = 'Showing: <strong style="color: #00bcd4;">Swipe Mode</strong>';
             }} else if (overlayMode && visual.old && visual.curr) {{
-                wrapperOld.classList.remove('hidden'); wrapperNew.classList.remove('hidden'); wrapperNew.classList.add('overlay-mode');
+                wrapperOld.classList.remove('hidden'); wrapperNew.classList.remove('hidden'); 
+                
+                if (isSch) {{
+                    wrapperNew.classList.add('sch-overlay-mode');
+                    oldImgEl.classList.add('sch-diff-old');
+                    newImgEl.classList.add('sch-diff-new');
+                    viewerContainer.classList.add('sch-diff-container');
+                }} else {{
+                    wrapperNew.classList.add('overlay-mode');
+                }}
+                
                 statusTextEl.innerHTML = 'Showing: <strong style="color: #FF9800;">Overlay Mode</strong>';
             }} else if (showOld && visual.old) {{
                 wrapperOld.classList.remove('hidden'); statusTextEl.innerHTML = 'Showing: <strong style="color: #F44336;">' + targetName + '</strong>';
