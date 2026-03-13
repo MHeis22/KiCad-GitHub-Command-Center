@@ -24,17 +24,14 @@ class CommitDialog(wx.Dialog):
         
         vbox = wx.BoxSizer(wx.VERTICAL)
         
-        # Commit Message
         vbox.Add(wx.StaticText(self, label="Commit Message:"), flag=wx.LEFT|wx.TOP, border=10)
         self.tc_msg = wx.TextCtrl(self, style=wx.TE_MULTILINE)
         vbox.Add(self.tc_msg, proportion=1, flag=wx.EXPAND|wx.LEFT|wx.RIGHT|wx.TOP, border=10)
         
-        # Branch Name
         vbox.Add(wx.StaticText(self, label="Target Branch (Leave empty to stay on current):"), flag=wx.LEFT|wx.TOP, border=10)
         self.tc_branch = wx.TextCtrl(self)
         vbox.Add(self.tc_branch, flag=wx.EXPAND|wx.LEFT|wx.RIGHT|wx.BOTTOM, border=10)
         
-        # Buttons
         btn_sizer = wx.StdDialogButtonSizer()
         btn_ok = wx.Button(self, wx.ID_OK)
         btn_cancel = wx.Button(self, wx.ID_CANCEL)
@@ -56,72 +53,61 @@ class CommandCenterDialog(wx.Dialog):
         super().__init__(parent, title="GitHub Command Center", size=(500, 780))
         self.project_dir = project_dir
         self.git_cmd = "git.exe" if os.name == "nt" else "git"
-        
-        # Instantiate engine early to fetch targets
         self.engine = DiffEngine(self.project_dir)
         
-        panel = wx.Panel(self)
-        main_vbox = wx.BoxSizer(wx.VERTICAL)
+        self.panel = wx.Panel(self)
+        self.main_vbox = wx.BoxSizer(wx.VERTICAL)
         
         # --- Header & Status ---
-        header = wx.StaticText(panel, label="Git Hardware Control")
+        header = wx.StaticText(self.panel, label="Git Hardware Control")
         header_font = header.GetFont()
         header_font.SetWeight(wx.FONTWEIGHT_BOLD)
         header_font.SetPointSize(12)
         header.SetFont(header_font)
-        main_vbox.Add(header, flag=wx.ALIGN_CENTER | wx.TOP | wx.BOTTOM, border=15)
+        self.main_vbox.Add(header, flag=wx.ALIGN_CENTER | wx.TOP | wx.BOTTOM, border=15)
 
-        self.status_lbl = wx.StaticText(panel, label="Checking status...\n")
-        main_vbox.Add(self.status_lbl, flag=wx.LEFT | wx.RIGHT | wx.BOTTOM, border=10)
+        self.status_lbl = wx.StaticText(self.panel, label="Checking status...\n")
+        self.main_vbox.Add(self.status_lbl, flag=wx.LEFT | wx.RIGHT | wx.BOTTOM, border=10)
         
-        # --- Setup Section (Only show if no .git folder) ---
+        # --- Setup Section (Dynamic) ---
+        self.setup_section_container = None
         if not os.path.isdir(os.path.join(self.project_dir, ".git")):
-            setup_box = wx.StaticBox(panel, label="New Project Setup")
-            setup_sizer = wx.StaticBoxSizer(setup_box, wx.VERTICAL)
-            
-            btn_setup = wx.Button(panel, label="Initialize & Link to GitHub")
-            btn_setup.SetBackgroundColour(wx.Colour(200, 255, 200)) # Highlight in light green
-            btn_setup.Bind(wx.EVT_BUTTON, self.on_setup_repo)
-            
-            setup_sizer.Add(btn_setup, flag=wx.EXPAND | wx.ALL, border=5)
-            main_vbox.Add(setup_sizer, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=10)
+            self.create_setup_ui()
         
         # --- Compare Target Selector ---
         target_sizer = wx.BoxSizer(wx.HORIZONTAL)
-        target_sizer.Add(wx.StaticText(panel, label="Compare against:"), flag=wx.ALIGN_CENTER_VERTICAL|wx.RIGHT, border=5)
+        target_sizer.Add(wx.StaticText(self.panel, label="Compare against:"), flag=wx.ALIGN_CENTER_VERTICAL|wx.RIGHT, border=5)
         
         targets = self.engine.get_git_targets()
         if not targets:
             targets = ["HEAD"]
             
-        self.cb_targets = wx.ComboBox(panel, choices=targets, style=wx.CB_READONLY)
+        self.cb_targets = wx.ComboBox(self.panel, choices=targets, style=wx.CB_READONLY)
         self.cb_targets.SetSelection(0)
         self.cb_targets.Bind(wx.EVT_COMBOBOX, self.on_target_change)
         
         target_sizer.Add(self.cb_targets, proportion=1, flag=wx.EXPAND)
-        main_vbox.Add(target_sizer, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=10)
+        self.main_vbox.Add(target_sizer, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=10)
         
         # --- DRC ---
-        self.cb_drc = wx.CheckBox(panel, label="Run DRC Checks (Shows DRC violations as diffs)")
+        self.cb_drc = wx.CheckBox(self.panel, label="Run DRC Checks (Shows DRC violations as diffs)")
         self.cb_drc.SetToolTip("Executes KiCad's design rules checker and compares violations.")
-        self.cb_drc.SetValue(False) # Off by default to keep viewing snappy
-        main_vbox.Add(self.cb_drc, flag=wx.LEFT | wx.RIGHT | wx.BOTTOM, border=15)
+        self.cb_drc.SetValue(False)
+        self.main_vbox.Add(self.cb_drc, flag=wx.LEFT | wx.RIGHT | wx.BOTTOM, border=15)
 
         # --- Action Buttons ---
-        btn_diff = wx.Button(panel, label="View Local Changes (Visual Diff)", size=(-1, 40))
-        btn_commit = wx.Button(panel, label="Save Snapshot (Quick Commit)", size=(-1, 40))
-        btn_switch = wx.Button(panel, label="Switch Working Branch", size=(-1, 40))
+        btn_diff = wx.Button(self.panel, label="View Local Changes (Visual Diff)", size=(-1, 40))
+        btn_commit = wx.Button(self.panel, label="Save Snapshot (Quick Commit)", size=(-1, 40))
+        btn_switch = wx.Button(self.panel, label="Switch Working Branch", size=(-1, 40))
         
-        # Stash Buttons Sizer
         stash_sizer = wx.BoxSizer(wx.HORIZONTAL)
-        btn_stash = wx.Button(panel, label="Stash Local Changes", size=(-1, 40))
-        btn_pop = wx.Button(panel, label="Pop Last Stash", size=(-1, 40))
+        btn_stash = wx.Button(self.panel, label="Stash Local Changes", size=(-1, 40))
+        btn_pop = wx.Button(self.panel, label="Pop Last Stash", size=(-1, 40))
         stash_sizer.Add(btn_stash, proportion=1, flag=wx.RIGHT, border=5)
         stash_sizer.Add(btn_pop, proportion=1, flag=wx.LEFT, border=5)
         
-        btn_push = wx.Button(panel, label="Push Changes to GitHub", size=(-1, 40))
-        
-        btn_sync = wx.Button(panel, label="Download from Server (Force Sync)", size=(-1, 40))
+        btn_push = wx.Button(self.panel, label="Push Changes to GitHub", size=(-1, 40))
+        btn_sync = wx.Button(self.panel, label="Download from Server (Force Sync)", size=(-1, 40))
         btn_sync.SetBackgroundColour(wx.Colour(230, 240, 255)) 
         
         btn_diff.Bind(wx.EVT_BUTTON, self.on_diff)
@@ -132,15 +118,15 @@ class CommandCenterDialog(wx.Dialog):
         btn_push.Bind(wx.EVT_BUTTON, self.on_push)
         btn_sync.Bind(wx.EVT_BUTTON, self.on_force_sync)
         
-        main_vbox.Add(btn_diff, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
-        main_vbox.Add(btn_commit, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
-        main_vbox.Add(btn_switch, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
-        main_vbox.Add(stash_sizer, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
-        main_vbox.Add(btn_push, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
-        main_vbox.Add(btn_sync, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
+        self.main_vbox.Add(btn_diff, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
+        self.main_vbox.Add(btn_commit, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
+        self.main_vbox.Add(btn_switch, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
+        self.main_vbox.Add(stash_sizer, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
+        self.main_vbox.Add(btn_push, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
+        self.main_vbox.Add(btn_sync, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
 
         # --- Help Text ---
-        help_box = wx.StaticBox(panel, label="Sync Instructions")
+        help_box = wx.StaticBox(self.panel, label="Sync Instructions")
         help_sizer = wx.StaticBoxSizer(help_box, wx.VERTICAL)
         help_text = (
             "TO SEE CHANGES AFTER SYNC/SWITCH/POP:\n"
@@ -149,17 +135,30 @@ class CommandCenterDialog(wx.Dialog):
             "3. If KiCad asks to save, select 'DISCARD CHANGES'.\n"
             "4. Re-open the file to see the loaded version."
         )
-        st_help = wx.StaticText(panel, label=help_text)
+        st_help = wx.StaticText(self.panel, label=help_text)
         st_help.SetForegroundColour(wx.Colour(100, 100, 100))
         help_sizer.Add(st_help, flag=wx.ALL, border=5)
-        main_vbox.Add(help_sizer, flag=wx.EXPAND | wx.ALL, border=15)
+        self.main_vbox.Add(help_sizer, flag=wx.EXPAND | wx.ALL, border=15)
         
-        btn_close = wx.Button(panel, label="Close")
+        btn_close = wx.Button(self.panel, label="Close")
         btn_close.Bind(wx.EVT_BUTTON, self.on_close)
-        main_vbox.Add(btn_close, flag=wx.ALIGN_RIGHT | wx.RIGHT | wx.BOTTOM, border=15)
+        self.main_vbox.Add(btn_close, flag=wx.ALIGN_RIGHT | wx.RIGHT | wx.BOTTOM, border=15)
         
-        panel.SetSizer(main_vbox)
+        self.panel.SetSizer(self.main_vbox)
         self.update_git_status()
+
+    def create_setup_ui(self):
+        """Builds the Setup UI section if git is not initialized."""
+        setup_box = wx.StaticBox(self.panel, label="New Project Setup")
+        self.setup_section_container = wx.StaticBoxSizer(setup_box, wx.VERTICAL)
+        
+        btn_setup = wx.Button(self.panel, label="Initialize & Link to GitHub")
+        btn_setup.SetBackgroundColour(wx.Colour(200, 255, 200))
+        btn_setup.Bind(wx.EVT_BUTTON, self.on_setup_repo)
+        
+        self.setup_section_container.Add(btn_setup, flag=wx.EXPAND | wx.ALL, border=5)
+        # Add it to the top of the action list (index 2, after header and status)
+        self.main_vbox.Insert(2, self.setup_section_container, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=10)
 
     def on_target_change(self, event):
         self.update_git_status()
@@ -190,36 +189,22 @@ class CommandCenterDialog(wx.Dialog):
             self.status_lbl.SetLabel("Status: Git Error.")
 
     def create_default_gitignore(self):
-        """Creates a default .gitignore for KiCad projects to prevent backup commits."""
         gitignore_path = os.path.join(self.project_dir, ".gitignore")
         if not os.path.exists(gitignore_path):
             content = (
                 "# KiCad backups and autosaves\n"
-                "*.bak\n"
-                "*.kicad_pcb-bak\n"
-                "*.kicad_sch-bak\n"
-                "*.kicad_pro-bak\n"
-                "*-save.pro\n"
-                "*-save.kicad_pcb\n"
-                "*-save.kicad_sch\n"
-                "*_autosave-*\n"
-                "_autosave-*\n"
-                "\n"
-                "# KiCad caches\n"
-                "fp-info-cache\n"
-                "\n"
-                "# Generated files/folders\n"
-                "*.bck\n"
-                "*.kicad_pcb-shl\n"
-                "python_environment/\n"
+                "*.bak\n*.kicad_pcb-bak\n*.kicad_sch-bak\n*.kicad_pro-bak\n"
+                "*-save.pro\n*-save.kicad_pcb\n*-save.kicad_sch\n"
+                "*_autosave-*\n_autosave-*\n\n"
+                "# KiCad caches\nfp-info-cache\n\n"
+                "# Generated files\n*.bck\n*.kicad_pcb-shl\npython_environment/\n"
             )
             with open(gitignore_path, "w") as f:
                 f.write(content)
 
     def on_setup_repo(self, event):
-        """Initializes a repo and sets the remote URL."""
         dlg = wx.TextEntryDialog(self, 
-            "Paste your GitHub Repository URL (e.g., https://github.com/user/repo.git):", 
+            "Paste your GitHub Repository URL:", 
             "Link to GitHub")
         
         if dlg.ShowModal() == wx.ID_OK:
@@ -230,34 +215,34 @@ class CommandCenterDialog(wx.Dialog):
 
             wx.BeginBusyCursor()
             try:
-                # 1. Initialize if needed
                 if not os.path.isdir(os.path.join(self.project_dir, ".git")):
                     subprocess.run([self.git_cmd, "-C", self.project_dir, "init"], check=True, creationflags=CREATE_NO_WINDOW)
                 
-                # 2. Add standard ignore rules
                 self.create_default_gitignore()
                 
-                # 3. Add or Update Remote
                 res_rem = subprocess.run([self.git_cmd, "-C", self.project_dir, "remote", "add", "origin", url], 
                                          capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
                 
-                # If remote 'origin' already exists, update it instead
                 if res_rem.returncode != 0:
                     subprocess.run([self.git_cmd, "-C", self.project_dir, "remote", "set-url", "origin", url], creationflags=CREATE_NO_WINDOW)
 
-                # 4. Success handling
-                wx.MessageBox("Project linked to GitHub successfully!\n\nA default .gitignore was also created to ignore backup files.", "Success")
+                wx.MessageBox("Project linked to GitHub successfully!", "Success")
+                
+                # --- UI Refresh Logic ---
+                if self.setup_section_container:
+                    # Hide the items in the sizer and the static box itself
+                    self.setup_section_container.ShowItems(False)
+                    self.main_vbox.Hide(self.setup_section_container, recursive=True)
+                    # Force the panel to update its layout now that an item is gone
+                    self.panel.Layout()
+
                 self.update_git_status()
                 
-                # Refresh targets
-                current_sel = self.cb_targets.GetStringSelection()
+                # Re-fetch targets (now that git exists)
                 new_targets = self.engine.get_git_targets()
                 if new_targets:
                     self.cb_targets.SetItems(new_targets)
-                    if current_sel in new_targets:
-                        self.cb_targets.SetStringSelection(current_sel)
-                    else:
-                        self.cb_targets.SetSelection(0)
+                    self.cb_targets.SetSelection(0)
                         
             except Exception as e:
                 wx.MessageBox(f"Failed to setup repository: {e}", "Error", wx.ICON_ERROR)
@@ -298,9 +283,9 @@ class CommandCenterDialog(wx.Dialog):
                     res_switch = subprocess.run([self.git_cmd, "-C", self.project_dir, "checkout", selected], 
                                                 capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
                     if res_switch.returncode != 0:
-                        wx.MessageBox(f"Checkout Failed. Do you have uncommitted changes blocking the switch?\n\n{res_switch.stderr}", "Git Error", wx.ICON_ERROR)
+                        wx.MessageBox(f"Checkout Failed.\n\n{res_switch.stderr}", "Git Error", wx.ICON_ERROR)
                     else:
-                        wx.MessageBox(f"Switched to branch '{selected}'.\n\nRemember to 'Discard Changes' if KiCad prompts you when reopening files.", "Success")
+                        wx.MessageBox(f"Switched to branch '{selected}'.", "Success")
                         self.update_git_status()
                 finally:
                     if wx.IsBusy(): wx.EndBusyCursor()
@@ -320,8 +305,6 @@ class CommandCenterDialog(wx.Dialog):
                 self.update_git_status()
             else:
                 wx.MessageBox(f"Stash failed:\n{res.stderr or res.stdout}", "Git Error", wx.ICON_ERROR)
-        except Exception as e:
-            wx.MessageBox(f"Error: {e}", "Error", wx.ICON_ERROR)
         finally:
             if wx.IsBusy(): wx.EndBusyCursor()
 
@@ -335,13 +318,10 @@ class CommandCenterDialog(wx.Dialog):
             res = subprocess.run([self.git_cmd, "-C", self.project_dir, "stash", "pop"], 
                                  capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
             if res.returncode == 0:
-                wx.MessageBox(f"Stash popped successfully:\n{res.stdout.strip()}\n\nRemember to 'Discard Changes' if KiCad prompts you.", "Success")
+                wx.MessageBox(f"Stash popped successfully:\n{res.stdout.strip()}", "Success")
                 self.update_git_status()
             else:
-                error_msg = res.stderr.strip() or res.stdout.strip()
-                wx.MessageBox(f"Stash pop failed:\n{error_msg}", "Git Error", wx.ICON_ERROR)
-        except Exception as e:
-            wx.MessageBox(f"Error: {e}", "Error", wx.ICON_ERROR)
+                wx.MessageBox(f"Stash pop failed:\n{res.stderr.strip()}", "Git Error", wx.ICON_ERROR)
         finally:
             if wx.IsBusy(): wx.EndBusyCursor()
 
@@ -385,16 +365,10 @@ class CommandCenterDialog(wx.Dialog):
             subprocess.run([self.git_cmd, "-C", self.project_dir, "clean", "-fd"], creationflags=CREATE_NO_WINDOW)
 
             pcbnew.Refresh()
-            msg = ("SUCCESS!\n\n"
-                   "Local files updated to match " + remote_ref + ".\n\n"
-                   "IMPORTANT: Close your PCB/Schematic editor now. "
-                   "When prompted, select 'DISCARD CHANGES' to load the new version.")
-            wx.MessageBox(msg, "Sync Complete")
+            wx.MessageBox("SUCCESS!\n\nLocal files updated. Remember to 'Discard Changes' if KiCad prompts you.", "Sync Complete")
             self.update_git_status()
-        except subprocess.CalledProcessError as e:
-            wx.MessageBox(f"Sync Failed:\n{e.stderr}", "Git Error")
         except Exception as e:
-            wx.MessageBox(f"Error: {e}", "Error")
+            wx.MessageBox(f"Sync Failed: {e}", "Git Error")
         finally:
             if wx.IsBusy(): wx.EndBusyCursor()
 
@@ -412,50 +386,28 @@ class CommandCenterDialog(wx.Dialog):
             try:
                 if not os.path.isdir(os.path.join(self.project_dir, ".git")):
                     subprocess.run([self.git_cmd, "-C", self.project_dir, "init"], check=True, creationflags=CREATE_NO_WINDOW)
-                    self.create_default_gitignore() # Ensure gitignore exists if it initializes here
+                    self.create_default_gitignore()
                 
                 if branch:
-                    if re.search(r'\s|~|\^|:|\?|\*|\[|\\|\.\.|@\{|^/|/$|\.$', branch):
-                        wx.MessageBox(f"Invalid branch name format: '{branch}'", "Git Error", wx.ICON_ERROR)
-                        dlg.Destroy()
-                        return
-
-                    res_check = subprocess.run([self.git_cmd, "-C", self.project_dir, "branch", "--format=%(refname:short)"], 
-                                               capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
-                    existing_branches = [b.strip() for b in res_check.stdout.split('\n') if b.strip()]
-
-                    if branch in existing_branches:
-                        res_branch = subprocess.run([self.git_cmd, "-C", self.project_dir, "checkout", branch], 
-                                                    capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
-                    else:
-                        res_branch = subprocess.run([self.git_cmd, "-C", self.project_dir, "checkout", "-b", branch], 
-                                                    capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
-                    
+                    res_branch = subprocess.run([self.git_cmd, "-C", self.project_dir, "checkout", "-b", branch], 
+                                                capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
                     if res_branch.returncode != 0:
-                        wx.MessageBox(f"Failed to switch to branch:\n{res_branch.stderr}", "Git Error", wx.ICON_ERROR)
-                        dlg.Destroy()
-                        return
+                        subprocess.run([self.git_cmd, "-C", self.project_dir, "checkout", branch], creationflags=CREATE_NO_WINDOW)
 
                 subprocess.run([self.git_cmd, "-C", self.project_dir, "add", "."], check=True, creationflags=CREATE_NO_WINDOW)
                 res_commit = subprocess.run([self.git_cmd, "-C", self.project_dir, "commit", "-m", msg], 
                                             capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
                 
                 if res_commit.returncode != 0:
-                    wx.MessageBox(f"Commit failed:\n{res_commit.stderr or res_commit.stdout}", "Git Error", wx.ICON_ERROR)
+                    wx.MessageBox(f"Commit failed:\n{res_commit.stderr}", "Git Error", wx.ICON_ERROR)
                 else:
-                    success_msg = f"Committed successfully on branch '{branch}'." if branch else "Committed successfully."
-                    wx.MessageBox(success_msg, "Success")
+                    wx.MessageBox("Committed successfully.", "Success")
                 
                 self.update_git_status()
                 
-                current_sel = self.cb_targets.GetStringSelection()
                 new_targets = self.engine.get_git_targets()
                 if new_targets:
                     self.cb_targets.SetItems(new_targets)
-                    if current_sel in new_targets:
-                        self.cb_targets.SetStringSelection(current_sel)
-                    else:
-                        self.cb_targets.SetSelection(0)
                         
             except Exception as e:
                 wx.MessageBox(f"Git operation failed: {e}", "Error", wx.ICON_ERROR)
@@ -468,27 +420,14 @@ class CommandCenterDialog(wx.Dialog):
             res_br = subprocess.run([self.git_cmd, "-C", self.project_dir, "branch", "--show-current"], 
                                     capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
             branch = res_br.stdout.strip()
-            if not branch:
-                wx.MessageBox("Could not detect current branch. Are you in a detached HEAD state?", "Error")
-                return
-
-            res_rem = subprocess.run([self.git_cmd, "-C", self.project_dir, "remote"], 
-                                     capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
-            if "origin" not in res_rem.stdout:
-                wx.MessageBox("Remote 'origin' not found. Please add a remote using 'git remote add origin <url>'", "Error")
-                return
-
+            
             res = subprocess.run([self.git_cmd, "-C", self.project_dir, "push", "-u", "origin", branch], 
                                  capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
             
             if res.returncode == 0:
                 wx.MessageBox(f"Successfully pushed branch '{branch}' to GitHub.", "Success")
             else:
-                error_msg = res.stderr.strip() or res.stdout.strip() or "Unknown Git error."
-                wx.MessageBox(f"Push Failed:\n{error_msg}", "Error")
-                
-        except Exception as e:
-            wx.MessageBox(f"An error occurred during push: {e}", "Error")
+                wx.MessageBox(f"Push Failed:\n{res.stderr.strip()}", "Error")
         finally:
             if wx.IsBusy(): wx.EndBusyCursor()
 
@@ -504,15 +443,8 @@ class GithubActionPlugin(pcbnew.ActionPlugin):
         self.icon_file_name = os.path.join(os.path.dirname(__file__), 'icon.png')
 
     def Run(self):
-        # Prevent the tool from opening if Git isn't installed
         if not is_git_installed():
-            wx.MessageBox(
-                "Git is not installed or not found in your system's PATH.\n\n"
-                "Please install Git from https://git-scm.com/downloads, "
-                "restart KiCad, and try again.", 
-                "Git Dependency Missing", 
-                wx.ICON_ERROR
-            )
+            wx.MessageBox("Git is not installed or not in PATH.", "Git Dependency Missing", wx.ICON_ERROR)
             return
 
         board = pcbnew.GetBoard()
