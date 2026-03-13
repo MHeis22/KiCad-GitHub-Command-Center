@@ -50,7 +50,8 @@ class CommitDialog(wx.Dialog):
 
 class CommandCenterDialog(wx.Dialog):
     def __init__(self, parent, project_dir):
-        super().__init__(parent, title="GitHub Command Center", size=(500, 780))
+        # Slightly increased size to fit the new button
+        super().__init__(parent, title="GitHub Command Center", size=(500, 830))
         self.project_dir = project_dir
         self.git_cmd = "git.exe" if os.name == "nt" else "git"
         self.engine = DiffEngine(self.project_dir)
@@ -97,6 +98,7 @@ class CommandCenterDialog(wx.Dialog):
 
         # --- Action Buttons ---
         btn_diff = wx.Button(self.panel, label="View Local Changes (Visual Diff)", size=(-1, 40))
+        btn_diff_all = wx.Button(self.panel, label="View All Files (Including Unchanged)", size=(-1, 40))
         btn_commit = wx.Button(self.panel, label="Save Snapshot (Quick Commit)", size=(-1, 40))
         btn_switch = wx.Button(self.panel, label="Switch Working Branch", size=(-1, 40))
         
@@ -111,6 +113,7 @@ class CommandCenterDialog(wx.Dialog):
         btn_sync.SetBackgroundColour(wx.Colour(230, 240, 255)) 
         
         btn_diff.Bind(wx.EVT_BUTTON, self.on_diff)
+        btn_diff_all.Bind(wx.EVT_BUTTON, self.on_diff_all)
         btn_commit.Bind(wx.EVT_BUTTON, self.on_commit)
         btn_switch.Bind(wx.EVT_BUTTON, self.on_switch_branch)
         btn_stash.Bind(wx.EVT_BUTTON, self.on_stash)
@@ -119,6 +122,7 @@ class CommandCenterDialog(wx.Dialog):
         btn_sync.Bind(wx.EVT_BUTTON, self.on_force_sync)
         
         self.main_vbox.Add(btn_diff, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
+        self.main_vbox.Add(btn_diff_all, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
         self.main_vbox.Add(btn_commit, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
         self.main_vbox.Add(btn_switch, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
         self.main_vbox.Add(stash_sizer, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
@@ -334,6 +338,22 @@ class CommandCenterDialog(wx.Dialog):
             diffs, summary = self.engine.render_all_diffs(show_unchanged=False, compare_target=selected_target, run_drc=run_checks)
             if not diffs:
                 wx.MessageBox(f"No local changes detected against {selected_target}.", "Info")
+            else:
+                win = DiffWindow(diffs, summary, target_name=selected_target)
+                win.Show()
+        finally:
+            if wx.IsBusy(): wx.EndBusyCursor()
+
+    def on_diff_all(self, event):
+        wx.BeginBusyCursor()
+        try:
+            selected_target = self.cb_targets.GetStringSelection()
+            run_checks = self.cb_drc.GetValue()
+            
+            # Use show_unchanged=True to render all files
+            diffs, summary = self.engine.render_all_diffs(show_unchanged=True, compare_target=selected_target, run_drc=run_checks)
+            if not diffs:
+                wx.MessageBox(f"No schematic or PCB files found to render.", "Info")
             else:
                 win = DiffWindow(diffs, summary, target_name=selected_target)
                 win.Show()

@@ -208,7 +208,7 @@ class DiffWindow:
                         <button class="view-btn" id="tab-todos" onclick="switchTab('todos')">TODOs</button>
                         <button class="view-btn" id="tab-pcb-logic" onclick="switchTab('pcb-logic')">Net/Comp Changes</button>
                         <button class="view-btn" id="tab-netlist" onclick="switchTab('netlist')">Logic (Netlist)</button>
-                        <button class="view-btn" id="tab-bom" onclick="switchTab('bom')">Modern BOM</button>
+                        <button class="view-btn" id="tab-bom" onclick="switchTab('bom')">BOM</button>
                     </div>
                 </div>
                 
@@ -576,7 +576,7 @@ class DiffWindow:
                 dimContainer.classList.add('hidden');
             }}
 
-            // --- Modern BOM Diff ---
+            // --- BOM Diff ---
             if (currentTab === 'bom') {{
                 btnToggleDiff.classList.add('hidden'); btnToggleOverlay.classList.add('hidden'); btnToggleSwipe.classList.add('hidden'); resetBtn.classList.add('hidden');
                 bomContainer.classList.remove('hidden');
@@ -585,7 +585,7 @@ class DiffWindow:
                 const oldBom = file.bomData.old || {{}};
                 
                 bomContainer.innerHTML = renderGroupedBom(oldBom, currBom);
-                statusTextEl.innerHTML = `Showing: <strong>Modern BOM</strong>`;
+                statusTextEl.innerHTML = `Showing: <strong>BOM</strong>`;
                 return;
             }}
 
