@@ -38,6 +38,7 @@ class DiffWindow:
                 "visuals": processed_visuals,
                 "netlistDiff": d.get('netlist_diff', ''),
                 "bomDiff": d.get('bom_diff', ''),
+                "pcbLogicDiff": d.get('pcb_logic_diff', ''),
                 "todos": d.get('todos', {'curr': [], 'old': []}),
                 "health": d.get('health', {'new': [], 'resolved': [], 'unresolved': []})
             })
@@ -62,6 +63,7 @@ class DiffWindow:
             --diff-bg: #1e1e1e;
             --diff-add: rgba(76, 175, 80, 0.15);
             --diff-del: rgba(244, 67, 54, 0.15);
+            --diff-mod: rgba(255, 152, 0, 0.15);
         }}
         
         body.light-theme {{
@@ -77,6 +79,7 @@ class DiffWindow:
             --diff-bg: #fafafa;
             --diff-add: #e6ffed;
             --diff-del: #ffeef0;
+            --diff-mod: #fff5e6;
         }}
 
         body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: var(--bg-main); color: var(--text-main); margin: 0; display: flex; height: 100vh; overflow: hidden; transition: background 0.3s, color 0.3s; }}
@@ -138,6 +141,7 @@ class DiffWindow:
         .diff-header {{ color: var(--text-muted); font-weight: bold; margin-top: 10px; }}
         .diff-add {{ color: #4CAF50; background-color: var(--diff-add); }}
         .diff-del {{ color: #F44336; background-color: var(--diff-del); }}
+        .diff-mod {{ color: #FF9800; background-color: var(--diff-mod); }}
         .diff-chunk {{ color: #00bcd4; font-weight: bold; }}
         .diff-normal {{ color: var(--text-main); }}
 
@@ -186,6 +190,7 @@ class DiffWindow:
                         <button class="view-btn active" id="tab-visual" onclick="switchTab('visual')">Visual View</button>
                         <button class="view-btn" id="tab-health" onclick="switchTab('health')">DRC Violations</button>
                         <button class="view-btn" id="tab-todos" onclick="switchTab('todos')">TODOs</button>
+                        <button class="view-btn" id="tab-pcb-logic" onclick="switchTab('pcb-logic')">Net/Comp Changes</button>
                         <button class="view-btn" id="tab-netlist" onclick="switchTab('netlist')">Logic (Netlist)</button>
                         <button class="view-btn" id="tab-bom" onclick="switchTab('bom')">BOM Diff</button>
                     </div>
@@ -373,6 +378,7 @@ class DiffWindow:
                 if (safeLine.startsWith('+++') || safeLine.startsWith('---')) return `<div class="diff-line diff-header">${{safeLine}}</div>`;
                 if (safeLine.startsWith('+')) return `<div class="diff-line diff-add">${{safeLine}}</div>`;
                 if (safeLine.startsWith('-')) return `<div class="diff-line diff-del">${{safeLine}}</div>`;
+                if (safeLine.startsWith('M')) return `<div class="diff-line diff-mod">${{safeLine}}</div>`;
                 if (safeLine.startsWith('@@')) return `<div class="diff-line diff-chunk">${{safeLine}}</div>`;
                 return `<div class="diff-line diff-normal">${{safeLine}}</div>`;
             }}).join('');
@@ -442,6 +448,7 @@ class DiffWindow:
             document.getElementById('tab-visual').classList.toggle('active', tab === 'visual');
             document.getElementById('tab-health').classList.toggle('active', tab === 'health');
             document.getElementById('tab-todos').classList.toggle('active', tab === 'todos');
+            document.getElementById('tab-pcb-logic').classList.toggle('active', tab === 'pcb-logic');
             document.getElementById('tab-netlist').classList.toggle('active', tab === 'netlist');
             document.getElementById('tab-bom').classList.toggle('active', tab === 'bom');
             renderView();
@@ -452,6 +459,7 @@ class DiffWindow:
             const file = diffData[activeIndex];
             const visual = file.visuals[currentLayer] || {{}};
             const isSch = file.name.endsWith('.kicad_sch');
+            const isPcb = file.name.endsWith('.kicad_pcb');
             
             let silkLayer = null;
             if (showSilk) {{
@@ -462,6 +470,8 @@ class DiffWindow:
 
             document.getElementById('tab-netlist').classList.toggle('hidden', !isSch);
             document.getElementById('tab-bom').classList.toggle('hidden', !isSch);
+            // Force the Net/Comp Changes tab to always remain visible
+            document.getElementById('tab-pcb-logic').classList.remove('hidden');
             // Hide DRC Violations tab for Schematics
             document.getElementById('tab-health').classList.toggle('hidden', isSch);
 
@@ -473,14 +483,19 @@ class DiffWindow:
             todosContainer.classList.add('hidden');
             healthContainer.classList.add('hidden');
 
-            // --- Netlist / BOM ---
-            if (currentTab === 'netlist' || currentTab === 'bom') {{
+            // --- Logical Diffs (PCB or SCH) ---
+            if (currentTab === 'netlist' || currentTab === 'bom' || currentTab === 'pcb-logic') {{
                 btnToggleDiff.classList.add('hidden'); btnToggleOverlay.classList.add('hidden'); btnToggleSwipe.classList.add('hidden'); resetBtn.classList.add('hidden');
                 textDiffContainer.classList.remove('hidden');
                 
-                const diffContent = currentTab === 'netlist' ? file.netlistDiff : file.bomDiff;
-                textDiffContainer.innerHTML = diffContent ? formatDiff(diffContent) : `<span style="color:var(--text-muted);">No logic changes found.</span>`;
-                statusTextEl.innerHTML = `Showing: <strong>${{currentTab === 'netlist' ? 'Netlist Text Diff' : 'BOM Text Diff'}}</strong>`;
+                let diffContent = "";
+                let tabName = "";
+                if (currentTab === 'netlist') {{ diffContent = file.netlistDiff; tabName = "Netlist Text Diff"; }}
+                else if (currentTab === 'bom') {{ diffContent = file.bomDiff; tabName = "BOM Text Diff"; }}
+                else if (currentTab === 'pcb-logic') {{ diffContent = file.pcbLogicDiff; tabName = "Net/Component Changes"; }}
+
+                textDiffContainer.innerHTML = diffContent ? formatDiff(diffContent) : `<span style="color:var(--text-muted);">No structural changes found.</span>`;
+                statusTextEl.innerHTML = `Showing: <strong>${{tabName}}</strong>`;
                 return;
             }}
             

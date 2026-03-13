@@ -118,6 +118,83 @@ class DiffEngine:
         except Exception as e:
             return [f"Error extracting TODOs: {e}"]
 
+    def _get_pcb_structure(self, file_path):
+        components = {} 
+        if not file_path or not os.path.exists(file_path):
+            return components
+        try:
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read()
+                blocks = re.split(r'\(footprint\s+', content)[1:]
+                for block in blocks:
+                    name_match = re.search(r'^"([^"]+)"', block)
+                    if not name_match: 
+                        name_match = re.search(r'^([^"\s\)]+)', block)
+                    name = name_match.group(1) if name_match else "Unknown"
+                    
+                    # Supports KiCad 6/7 fp_text AND KiCad 8 properties
+                    ref_match = re.search(r'\((?:fp_text\s+reference|property\s+"Reference")\s+"([^"]+)"', block)
+                    val_match = re.search(r'\((?:fp_text\s+value|property\s+"Value")\s+"([^"]*)"', block)
+                    
+                    if ref_match:
+                        ref = ref_match.group(1)
+                        val = val_match.group(1) if val_match else ""
+                        components[ref] = {'fp': name, 'val': val}
+        except Exception as e:
+            print(f"PCB Structure Error: {e}")
+        return components
+
+    def _get_sch_structure(self, file_path):
+        components = {}
+        if not file_path or not os.path.exists(file_path):
+            return components
+        try:
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read()
+                blocks = re.split(r'\(symbol\s+', content)[1:]
+                for block in blocks:
+                    # Update regexes to correctly parse strict quote encapsulation
+                    lib_match = re.search(r'\(lib_id\s+"([^"]+)"', block)
+                    fp_match  = re.search(r'\(property\s+"Footprint"\s+"([^"]*)"', block)
+                    ref_match = re.search(r'\(property\s+"Reference"\s+"([^"]+)"', block)
+                    val_match = re.search(r'\(property\s+"Value"\s+"([^"]*)"', block)
+                    
+                    if ref_match:
+                        ref = ref_match.group(1)
+                        if ref == "Reference": continue
+                        
+                        # Use actual Footprint property, fallback to lib_id if empty
+                        fp = fp_match.group(1) if fp_match and fp_match.group(1) else (lib_match.group(1) if lib_match else "Unknown")
+                        val = val_match.group(1) if val_match else ""
+                        components[ref] = {'fp': fp, 'val': val}
+        except Exception as e:
+            print(f"SCH Structure Error: {e}")
+        return components
+
+    def _compare_logic_data(self, old_data, curr_data):
+        """Compares two component dictionaries and returns a text diff."""
+        changes = []
+        all_refs = sorted(set(old_data.keys()) | set(curr_data.keys()))
+        
+        for ref in all_refs:
+            if ref not in old_data:
+                changes.append(f"+ {ref}: Added ['{curr_data[ref]['val']}', FP: '{curr_data[ref]['fp']}']")
+            elif ref not in curr_data:
+                changes.append(f"- {ref}: Removed (was '{old_data[ref]['val']}')")
+            else:
+                o = old_data[ref]
+                c = curr_data[ref]
+                diffs = []
+                if o['val'] != c['val']:
+                    diffs.append(f"Value '{o['val']}' -> '{c['val']}'")
+                if o['fp'] != c['fp']:
+                    diffs.append(f"Footprint/Lib '{o['fp']}' -> '{c['fp']}'")
+                
+                if diffs:
+                    changes.append(f"M {ref}: " + ", ".join(diffs))
+                    
+        return "\n".join(changes)
+
     def _format_violation_items(self, items):
         """Helper to extract clean descriptions from KiCad JSON item dictionaries."""
         formatted = []
@@ -142,7 +219,7 @@ class DiffEngine:
             except: pass
             
         try:
-            cmd = [self.kicad_cli, "pcb", "drc", "--format", "json", "--output", out_json, file_path]
+            cmd = [self.kicad_cli, "pcb" if is_pcb else "sch", "drc" if is_pcb else "erc", "--format", "json", "--output", out_json, file_path]
             
             subprocess.run(cmd, capture_output=True, cwd=self.project_dir, creationflags=CREATE_NO_WINDOW)
             
@@ -259,6 +336,7 @@ class DiffEngine:
             visuals = {} 
             netlist_diff = ""
             bom_diff = ""
+            pcb_logic_diff = ""
             health_data = {"new": [], "resolved": [], "unresolved": []}
 
             try:
@@ -273,7 +351,7 @@ class DiffEngine:
                         if pro_path:
                             shutil.copy2(pro_path, old_pro_tmp)
 
-                # 2. Iterate through layers
+                # 2. Iterate through layers for visual diff
                 for layer in layers_to_export:
                     ext = "svg"
                     layer_safe = layer.replace('.', '_')
@@ -313,7 +391,17 @@ class DiffEngine:
                         "old": old_out if os.path.exists(old_out) and os.path.getsize(old_out) > 0 and not os.path.isdir(old_out) else None
                     }
 
-                # 3. Handle Logical Diffs
+                # 3. Handle Logical Diffs (PCB and SCH)
+                if has_old:
+                    if is_pcb:
+                        old_comp = self._get_pcb_structure(old_board_tmp)
+                        curr_comp = self._get_pcb_structure(file_path)
+                        pcb_logic_diff = self._compare_logic_data(old_comp, curr_comp)
+                    else:
+                        old_comp = self._get_sch_structure(old_board_tmp)
+                        curr_comp = self._get_sch_structure(file_path)
+                        pcb_logic_diff = self._compare_logic_data(old_comp, curr_comp)
+
                 if not is_pcb:
                     curr_net = os.path.join(self.tmp_dir, f"curr_{safe_name}.net")
                     curr_bom = os.path.join(self.tmp_dir, f"curr_{safe_name}.csv")
@@ -334,7 +422,7 @@ class DiffEngine:
                 curr_todos = self._extract_todos(file_path) if status_text != "Deleted" else []
                 old_todos = self._extract_todos(old_board_tmp) if has_old else []
                 
-                # 5. Extract Health (DRC)
+                # 5. Extract Health (DRC/ERC)
                 if run_drc:
                     curr_health = self._run_rule_check(file_path, is_pcb) if status_text != "Deleted" else []
                     old_health = self._run_rule_check(old_board_tmp, is_pcb) if has_old else []
@@ -354,6 +442,7 @@ class DiffEngine:
                     "visuals": visuals,
                     "netlist_diff": netlist_diff,
                     "bom_diff": bom_diff,
+                    "pcb_logic_diff": pcb_logic_diff,
                     "todos": {
                         "curr": curr_todos,
                         "old": old_todos
