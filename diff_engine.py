@@ -25,7 +25,7 @@ class DiffEngine:
         """Returns a dict of {filename: status_code} for files that differ between target and working tree"""
         status_dict = {}
         try:
-            # 1. Compare working tree to the specific target commit/branch
+            # 1. Compare working tree to the specific target commit/branch (will fail if HEAD missing on new repo)
             res = subprocess.run([self.git_cmd, "-C", self.project_dir, "diff", target, "--name-status"], 
                                  capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
             for line in res.stdout.split('\n'):
@@ -36,14 +36,15 @@ class DiffEngine:
                         fname = parts[1].strip().strip('"')
                         status_dict[fname] = code
 
-            # 2. Catch untracked files
+            # 2. Catch untracked files and staged files that might be missed if HEAD doesn't exist
             res_untracked = subprocess.run([self.git_cmd, "-C", self.project_dir, "status", "--porcelain"], 
                                  capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
             for line in res_untracked.stdout.split('\n'):
-                if line.startswith('??'):
+                if len(line) > 2:
+                    code = line[:2].strip()
                     fname = line[3:].strip().strip('"')
                     if fname not in status_dict:
-                        status_dict[fname] = '??'
+                        status_dict[fname] = code
         except Exception:
             pass
         return status_dict

@@ -3,6 +3,7 @@ import os
 import subprocess
 import pcbnew
 import re
+import webbrowser
 from .diff_engine import DiffEngine
 from .diff_window import DiffWindow
 
@@ -19,11 +20,22 @@ def is_git_installed():
         return False
 
 class CommitDialog(wx.Dialog):
-    def __init__(self, parent):
-        super().__init__(parent, title="Commit Changes", size=(400, 280))
+    def __init__(self, parent, changed_files):
+        # Increased size to comfortably fit the check list box
+        super().__init__(parent, title="Commit Changes", size=(450, 450))
+        self.changed_files = changed_files
         
         vbox = wx.BoxSizer(wx.VERTICAL)
         
+        # --- File Selection Menu ---
+        vbox.Add(wx.StaticText(self, label="Files to Commit (Uncheck to exclude):"), flag=wx.LEFT|wx.TOP, border=10)
+        self.clb_files = wx.CheckListBox(self, choices=self.changed_files)
+        # Default all turned on
+        for i in range(len(self.changed_files)):
+            self.clb_files.Check(i, True)
+        vbox.Add(self.clb_files, proportion=1, flag=wx.EXPAND|wx.LEFT|wx.RIGHT|wx.TOP, border=10)
+        
+        # --- Commit Details ---
         vbox.Add(wx.StaticText(self, label="Commit Message:"), flag=wx.LEFT|wx.TOP, border=10)
         self.tc_msg = wx.TextCtrl(self, style=wx.TE_MULTILINE)
         vbox.Add(self.tc_msg, proportion=1, flag=wx.EXPAND|wx.LEFT|wx.RIGHT|wx.TOP, border=10)
@@ -42,6 +54,9 @@ class CommitDialog(wx.Dialog):
         vbox.Add(btn_sizer, flag=wx.ALIGN_RIGHT|wx.BOTTOM|wx.RIGHT, border=10)
         self.SetSizer(vbox)
 
+    def get_selected_files(self):
+        return [self.changed_files[i] for i in range(self.clb_files.GetCount()) if self.clb_files.IsChecked(i)]
+
     def get_message(self):
         return self.tc_msg.GetValue().strip()
 
@@ -50,8 +65,8 @@ class CommitDialog(wx.Dialog):
 
 class CommandCenterDialog(wx.Dialog):
     def __init__(self, parent, project_dir):
-        # Slightly increased size to fit the new button
-        super().__init__(parent, title="GitHub Command Center", size=(500, 730))
+        # Increased size to accommodate the Open GitHub button
+        super().__init__(parent, title="GitHub Command Center", size=(500, 800))
         self.project_dir = project_dir
         self.git_cmd = "git.exe" if os.name == "nt" else "git"
         self.engine = DiffEngine(self.project_dir)
@@ -109,6 +124,7 @@ class CommandCenterDialog(wx.Dialog):
         stash_sizer.Add(btn_pop, proportion=1, flag=wx.LEFT, border=5)
         
         btn_push = wx.Button(self.panel, label="Push Changes to GitHub", size=(-1, 40))
+        btn_github = wx.Button(self.panel, label="Open GitHub Page", size=(-1, 40))
         btn_sync = wx.Button(self.panel, label="Download from Server (Force Sync)", size=(-1, 40))
         btn_sync.SetBackgroundColour(wx.Colour(230, 240, 255)) 
         
@@ -119,6 +135,7 @@ class CommandCenterDialog(wx.Dialog):
         btn_stash.Bind(wx.EVT_BUTTON, self.on_stash)
         btn_pop.Bind(wx.EVT_BUTTON, self.on_pop)
         btn_push.Bind(wx.EVT_BUTTON, self.on_push)
+        btn_github.Bind(wx.EVT_BUTTON, self.on_open_github)
         btn_sync.Bind(wx.EVT_BUTTON, self.on_force_sync)
         
         self.main_vbox.Add(btn_diff, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
@@ -127,6 +144,7 @@ class CommandCenterDialog(wx.Dialog):
         self.main_vbox.Add(btn_switch, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
         self.main_vbox.Add(stash_sizer, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
         self.main_vbox.Add(btn_push, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
+        self.main_vbox.Add(btn_github, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
         self.main_vbox.Add(btn_sync, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
 
         # --- Help Text ---
@@ -201,7 +219,8 @@ class CommandCenterDialog(wx.Dialog):
                 "*-save.pro\n*-save.kicad_pcb\n*-save.kicad_sch\n"
                 "*_autosave-*\n_autosave-*\n\n"
                 "# KiCad caches\nfp-info-cache\n\n"
-                "# Generated files\n*.bck\n*.kicad_pcb-shl\npython_environment/\n"
+                "# Generated files\n*.bck\n*.kicad_pcb-shl\npython_environment/\n\n"
+                "# OS files\n.DS_Store\nThumbs.db\n"
             )
             with open(gitignore_path, "w") as f:
                 f.write(content)
@@ -222,7 +241,13 @@ class CommandCenterDialog(wx.Dialog):
                 if not os.path.isdir(os.path.join(self.project_dir, ".git")):
                     subprocess.run([self.git_cmd, "-C", self.project_dir, "init"], check=True, creationflags=CREATE_NO_WINDOW)
                 
-                self.create_default_gitignore()
+                # Check for .gitignore creation
+                if not os.path.exists(os.path.join(self.project_dir, ".gitignore")):
+                    if wx.IsBusy(): wx.EndBusyCursor()
+                    create_gi = wx.MessageBox("Create a default .gitignore file for KiCad?", "Create .gitignore?", wx.YES_NO | wx.ICON_QUESTION)
+                    if create_gi == wx.YES:
+                        self.create_default_gitignore()
+                    wx.BeginBusyCursor()
                 
                 res_rem = subprocess.run([self.git_cmd, "-C", self.project_dir, "remote", "add", "origin", url], 
                                          capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
@@ -393,28 +418,51 @@ class CommandCenterDialog(wx.Dialog):
             if wx.IsBusy(): wx.EndBusyCursor()
 
     def on_commit(self, event):
-        dlg = CommitDialog(self)
+        if not os.path.isdir(os.path.join(self.project_dir, ".git")):
+            subprocess.run([self.git_cmd, "-C", self.project_dir, "init"], check=True, creationflags=CREATE_NO_WINDOW)
+            
+            if not os.path.exists(os.path.join(self.project_dir, ".gitignore")):
+                create_gi = wx.MessageBox("Create a default .gitignore file for KiCad?", "Create .gitignore?", wx.YES_NO | wx.ICON_QUESTION)
+                if create_gi == wx.YES:
+                    self.create_default_gitignore()
+        
+        status_dict = self.engine.get_git_status(target="HEAD")
+        changed_files = list(status_dict.keys())
+        
+        if not changed_files:
+            wx.MessageBox("No changes detected. Workspace is clean.", "Info")
+            return
+
+        dlg = CommitDialog(self, changed_files)
         if dlg.ShowModal() == wx.ID_OK:
             msg = dlg.get_message()
             branch = dlg.get_branch()
+            selected_files = dlg.get_selected_files()
             
             if not msg:
                 wx.MessageBox("Commit message cannot be empty.", "Error")
                 dlg.Destroy()
                 return
+                
+            if not selected_files:
+                wx.MessageBox("No files selected to commit.", "Error")
+                dlg.Destroy()
+                return
 
             try:
-                if not os.path.isdir(os.path.join(self.project_dir, ".git")):
-                    subprocess.run([self.git_cmd, "-C", self.project_dir, "init"], check=True, creationflags=CREATE_NO_WINDOW)
-                    self.create_default_gitignore()
-                
                 if branch:
                     res_branch = subprocess.run([self.git_cmd, "-C", self.project_dir, "checkout", "-b", branch], 
                                                 capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
                     if res_branch.returncode != 0:
                         subprocess.run([self.git_cmd, "-C", self.project_dir, "checkout", branch], creationflags=CREATE_NO_WINDOW)
 
-                subprocess.run([self.git_cmd, "-C", self.project_dir, "add", "."], check=True, creationflags=CREATE_NO_WINDOW)
+                # Reset staging area first so we don't accidentally commit things that were manually staged
+                subprocess.run([self.git_cmd, "-C", self.project_dir, "reset"], creationflags=CREATE_NO_WINDOW)
+                
+                # Add only the explicitly selected files
+                cmd_add = [self.git_cmd, "-C", self.project_dir, "add", "--"] + selected_files
+                subprocess.run(cmd_add, check=True, creationflags=CREATE_NO_WINDOW)
+                
                 res_commit = subprocess.run([self.git_cmd, "-C", self.project_dir, "commit", "-m", msg], 
                                             capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
                 
@@ -450,6 +498,28 @@ class CommandCenterDialog(wx.Dialog):
                 wx.MessageBox(f"Push Failed:\n{res.stderr.strip()}", "Error")
         finally:
             if wx.IsBusy(): wx.EndBusyCursor()
+
+    def on_open_github(self, event):
+        if not os.path.isdir(os.path.join(self.project_dir, ".git")):
+            wx.MessageBox("No Git repo found. Please initialize and link first.", "Error")
+            return
+            
+        try:
+            res = subprocess.run([self.git_cmd, "-C", self.project_dir, "remote", "get-url", "origin"], 
+                                 capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
+            if res.returncode == 0:
+                url = res.stdout.strip()
+                # Parse standard ssh git formats directly into an https format
+                if url.startswith("git@github.com:"):
+                    url = url.replace("git@github.com:", "https://github.com/")
+                if url.endswith(".git"):
+                    url = url[:-4]
+                    
+                webbrowser.open(url)
+            else:
+                wx.MessageBox("No remote 'origin' found. Have you linked your project to GitHub?", "Error")
+        except Exception as e:
+            wx.MessageBox(f"Failed to open GitHub: {e}", "Error")
 
     def on_close(self, event):
         self.Destroy()
