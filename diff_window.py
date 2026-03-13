@@ -60,6 +60,8 @@ class DiffWindow:
         html_content = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>KiCad Hardware Diff Viewer</title>
     <style>
         :root {{
@@ -94,9 +96,9 @@ class DiffWindow:
             --diff-mod: #fff5e6;
         }}
 
-        body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: var(--bg-main); color: var(--text-main); margin: 0; display: flex; height: 100vh; overflow: hidden; transition: background 0.3s, color 0.3s; }}
+        body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: var(--bg-main); color: var(--text-main); margin: 0; display: flex; height: 100vh; overflow: hidden; transition: background 0.3s, color 0.3s; overscroll-behavior: none; }}
         
-        #sidebar {{ width: 280px; background: var(--bg-sidebar); border-right: 1px solid var(--border-color); display: flex; flex-direction: column; transition: 0.3s; }}
+        #sidebar {{ width: 280px; background: var(--bg-sidebar); border-right: 1px solid var(--border-color); display: flex; flex-direction: column; transition: 0.3s; flex-shrink: 0; }}
         .sidebar-header {{ padding: 15px; background: var(--bg-header); border-bottom: 1px solid var(--border-color); font-weight: bold; transition: 0.3s; }}
         .file-list {{ flex: 1; overflow-y: auto; list-style: none; padding: 0; margin: 0; }}
         .file-item {{ padding: 12px 15px; border-bottom: 1px solid var(--border-color); cursor: pointer; transition: background 0.2s; }}
@@ -105,7 +107,7 @@ class DiffWindow:
         .file-name {{ font-weight: bold; margin-bottom: 4px; word-break: break-all; }}
         .file-status {{ font-size: 0.85em; color: var(--text-muted); }}
         
-        #main-content {{ flex: 1; display: flex; flex-direction: column; background: var(--bg-main); transition: 0.3s; }}
+        #main-content {{ flex: 1; display: flex; flex-direction: column; background: var(--bg-main); transition: 0.3s; overflow: hidden; }}
         #topbar {{ padding: 15px; background: var(--bg-sidebar); border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; transition: 0.3s; }}
         
         .summary-box {{ padding: 10px 15px; background: var(--bg-header); border-radius: 6px; font-size: 0.9em; max-width: 35%; max-height: 60px; overflow-y: auto; border: 1px solid var(--border-color); transition: 0.3s; }}
@@ -114,7 +116,7 @@ class DiffWindow:
         
         .selection-row {{ display: flex; align-items: center; gap: 12px; }}
         .layer-selector {{ display: flex; align-items: center; gap: 8px; background: var(--bg-header); padding: 4px 10px; border-radius: 4px; border: 1px solid var(--border-color); font-size: 13px; }}
-        select {{ background: var(--bg-main); color: var(--text-main); border: 1px solid var(--border-color); padding: 3px 6px; border-radius: 3px; cursor: pointer; font-size: 13px; }}
+        select {{ background: var(--bg-main); color: var(--text-main); border: 1px solid var(--border-color); padding: 3px 6px; border-radius: 3px; cursor: pointer; font-size: 13px; max-width: 150px; }}
         select:focus {{ outline: none; border-color: #007acc; }}
 
         .checkbox-label {{ display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 13px; user-select: none; }}
@@ -132,7 +134,7 @@ class DiffWindow:
         button.btn-secondary:hover {{ background: #777; }}
         .status-indicator {{ font-size: 14px; color: var(--text-muted); min-width: 220px; text-align: right; }}
         
-        #viewer-container {{ flex: 1; display: flex; justify-content: center; align-items: center; padding: 20px; overflow: hidden; position: relative; }}
+        #viewer-container {{ flex: 1; display: flex; justify-content: center; align-items: center; padding: 20px; overflow: hidden; position: relative; touch-action: none; }}
         
         .viewer-absolute {{ position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; justify-content: center; align-items: center; pointer-events: none; }}
         .img-transform-wrapper {{ width: 100%; height: 100%; display: flex; justify-content: center; align-items: center; transform-origin: 0 0; position: absolute; }}
@@ -143,7 +145,7 @@ class DiffWindow:
         img.board-viewer {{ position: absolute; width: 100%; height: 100%; object-fit: contain; pointer-events: none; filter: contrast(1.15) saturate(1.2); }} 
         .hidden {{ display: none !important; }}
         
-        #swipe-slider-handle {{ position: absolute; top: 0; bottom: 0; left: 50%; width: 2px; background: #00bcd4; cursor: ew-resize; z-index: 100; }}
+        #swipe-slider-handle {{ position: absolute; top: 0; bottom: 0; left: 50%; width: 2px; background: #00bcd4; cursor: ew-resize; z-index: 100; touch-action: none; }}
         #swipe-slider-handle::after {{ content: '< >'; position: absolute; top: 50%; left: -14px; width: 30px; height: 30px; background: #00bcd4; color: #fff; border-radius: 50%; text-align: center; line-height: 30px; font-weight: bold; transform: translateY(-50%); font-family: sans-serif; box-shadow: 0 2px 5px rgba(0,0,0,0.5); pointer-events: none; }}
         .overlay-mode {{ opacity: 0.8; background: transparent; mix-blend-mode: screen; z-index: 10; }}
         .silk-overlay {{ z-index: 20; opacity: 1.0; background: transparent; mix-blend-mode: screen; filter: brightness(1.1) contrast(1.2); }}
@@ -181,6 +183,35 @@ class DiffWindow:
         .todo-empty {{ color: var(--text-muted); font-style: italic; padding: 10px 0; }}
 
         .no-data-msg {{ color: var(--text-muted); font-style: italic; font-size: 1.2em; }}
+
+        /* --- Mobile Responsiveness --- */
+        @media (max-width: 768px) {{
+            /* Allow vertical scrolling on mobile and remove fixed height */
+            body {{ display: block; height: auto; overflow-y: auto; }}
+            #main-content {{ display: block; height: auto; overflow: visible; }}
+            
+            #sidebar {{ width: 100%; height: 140px; flex-shrink: 0; border-right: none; border-bottom: 1px solid var(--border-color); }}
+            #topbar {{ flex-direction: column; align-items: flex-start; gap: 10px; padding: 10px; flex-shrink: 0; }}
+            
+            .summary-box {{ max-width: 100%; width: 100%; max-height: max-content; box-sizing: border-box; }}
+            .controls-wrapper {{ width: 100%; align-items: flex-start; gap: 8px; }}
+            .selection-row {{ flex-wrap: wrap; gap: 8px; width: 100%; }}
+            
+            .view-toggle {{ flex-wrap: wrap; gap: 4px; width: 100%; }}
+            .view-btn {{ flex: 1 1 auto; text-align: center; padding: 8px; }}
+            
+            .controls {{ flex-wrap: wrap; justify-content: flex-start; width: 100%; gap: 6px; }}
+            .status-indicator {{ text-align: left; min-width: auto; width: 100%; margin-bottom: 4px; font-weight: bold; }}
+            button {{ padding: 10px; flex: 1 1 auto; }}
+            
+            .todos-wrapper {{ flex-direction: column; height: auto; }}
+            .todos-column {{ min-height: 250px; }}
+            
+            /* Give the viewer container a strong guaranteed height on mobile */
+            #viewer-container {{ padding: 10px; height: 75vh; min-height: 450px; flex: none; }}
+            #text-diff-container, #todos-container, #health-container, #bom-container {{ min-height: 60vh; flex: none; }}
+            .layer-selector {{ flex: 1 1 auto; justify-content: space-between; }}
+        }}
     </style>
 </head>
 <body>
@@ -215,19 +246,19 @@ class DiffWindow:
 
                     <div class="view-toggle" id="view-toggles">
                         <button class="view-btn active" id="tab-visual" onclick="switchTab('visual')">Visual View</button>
-                        <button class="view-btn" id="tab-health" onclick="switchTab('health')">DRC Violations</button>
+                        <button class="view-btn" id="tab-health" onclick="switchTab('health')">DRC</button>
                         <button class="view-btn" id="tab-todos" onclick="switchTab('todos')">TODOs</button>
-                        <button class="view-btn" id="tab-pcb-logic" onclick="switchTab('pcb-logic')">Net/Comp Changes</button>
-                        <button class="view-btn" id="tab-netlist" onclick="switchTab('netlist')">Logic (Netlist)</button>
-                        <button class="view-btn" id="tab-bom" onclick="switchTab('bom')">Modern BOM</button>
+                        <button class="view-btn" id="tab-pcb-logic" onclick="switchTab('pcb-logic')">Logic</button>
+                        <button class="view-btn" id="tab-netlist" onclick="switchTab('netlist')">Netlist</button>
+                        <button class="view-btn" id="tab-bom" onclick="switchTab('bom')">BOM</button>
                     </div>
                 </div>
                 
                 <div class="controls">
                     <div class="status-indicator" id="status-text">Select a file...</div>
-                    <button onclick="toggleSwipe()" id="btn-toggle-swipe" class="hidden btn-secondary">Swipe (W)</button>
-                    <button onclick="toggleOverlay()" id="btn-toggle-overlay" class="hidden btn-secondary">Overlay (O)</button>
-                    <button onclick="toggleDiff()" id="btn-toggle-diff" class="hidden">Toggle Old / New (Space)</button>
+                    <button onclick="toggleSwipe()" id="btn-toggle-swipe" class="hidden btn-secondary">Swipe</button>
+                    <button onclick="toggleOverlay()" id="btn-toggle-overlay" class="hidden btn-secondary">Overlay</button>
+                    <button onclick="toggleDiff()" id="btn-toggle-diff" class="hidden">Toggle (Space)</button>
                     <button onclick="resetTransform()" id="reset-btn" class="hidden btn-secondary">Reset Zoom</button>
                 </div>
             </div>
@@ -331,8 +362,15 @@ class DiffWindow:
             URL.revokeObjectURL(url);
         }}
 
+        // === ZOOM AND PAN LOGIC (MOUSE & TOUCH) ===
         let scale = 1, panning = false, pointX = 0, pointY = 0, start = {{ x: 0, y: 0 }};
         let draggingSlider = false;
+        
+        let initialPinchDistance = null;
+        let initialScale = 1;
+        let initialPointX = 0;
+        let initialPointY = 0;
+        let pinchCenter = {{x: 0, y: 0}};
 
         function setTransform() {{
             const tf = 'translate(' + pointX + 'px, ' + pointY + 'px) scale(' + scale + ')';
@@ -345,6 +383,7 @@ class DiffWindow:
             setTransform();
         }}
 
+        // Mouse Events
         sliderHandle.addEventListener('mousedown', (e) => {{
             draggingSlider = true;
             e.stopPropagation(); e.preventDefault();
@@ -391,6 +430,80 @@ class DiffWindow:
             setTransform();
         }};
 
+        // Touch Events (Mobile Pinch-to-Zoom & Pan)
+        sliderHandle.addEventListener('touchstart', (e) => {{
+            draggingSlider = true;
+            e.stopPropagation();
+        }}, {{passive: false}});
+
+        viewerContainer.addEventListener('touchstart', function(e) {{
+            if (imgWrapperOld.classList.contains('hidden') && imgWrapperNew.classList.contains('hidden')) return;
+            if (e.touches.length === 1) {{
+                start = {{ x: e.touches[0].clientX - pointX, y: e.touches[0].clientY - pointY }};
+                panning = true;
+            }} else if (e.touches.length === 2) {{
+                panning = false;
+                initialPinchDistance = Math.hypot(
+                    e.touches[0].clientX - e.touches[1].clientX,
+                    e.touches[0].clientY - e.touches[1].clientY
+                );
+                initialScale = scale;
+                initialPointX = pointX;
+                initialPointY = pointY;
+                
+                const rect = viewerContainer.getBoundingClientRect();
+                pinchCenter = {{
+                    x: (e.touches[0].clientX + e.touches[1].clientX) / 2 - rect.left,
+                    y: (e.touches[0].clientY + e.touches[1].clientY) / 2 - rect.top
+                }};
+            }}
+        }}, {{passive: false}});
+
+        viewerContainer.addEventListener('touchmove', function(e) {{
+            if (imgWrapperOld.classList.contains('hidden') && imgWrapperNew.classList.contains('hidden')) return;
+            
+            if (draggingSlider && swipeMode && e.touches.length === 1) {{
+                e.preventDefault();
+                const rect = viewerContainer.getBoundingClientRect();
+                swipePos = ((e.touches[0].clientX - rect.left) / rect.width) * 100;
+                swipePos = Math.max(0, Math.min(100, swipePos));
+                sliderHandle.style.left = swipePos + '%';
+                wrapperNew.style.clipPath = `polygon(0 0, ${{swipePos}}% 0, ${{swipePos}}% 100%, 0 100%)`;
+                return;
+            }}
+
+            if (panning && e.touches.length === 1) {{
+                e.preventDefault();
+                pointX = e.touches[0].clientX - start.x;
+                pointY = e.touches[0].clientY - start.y;
+                setTransform();
+            }} else if (e.touches.length === 2) {{
+                e.preventDefault();
+                const currentDistance = Math.hypot(
+                    e.touches[0].clientX - e.touches[1].clientX,
+                    e.touches[0].clientY - e.touches[1].clientY
+                );
+                const zoomFactor = currentDistance / initialPinchDistance;
+                scale = initialScale * zoomFactor;
+                if (scale < 0.1) scale = 0.1;
+                if (scale > 50) scale = 50;
+
+                // Adjust pointX/pointY to zoom around the center point between fingers
+                pointX = pinchCenter.x - (pinchCenter.x - initialPointX) * zoomFactor;
+                pointY = pinchCenter.y - (pinchCenter.y - initialPointY) * zoomFactor;
+
+                setTransform();
+            }}
+        }}, {{passive: false}});
+
+        viewerContainer.addEventListener('touchend', function(e) {{
+            panning = false;
+            initialPinchDistance = null;
+            draggingSlider = false;
+        }});
+
+
+        // === DATA FORMATTING AND UI ===
         function escapeHtml(unsafe) {{ return unsafe ? unsafe.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;") : ''; }}
 
         function formatHealthItem(text) {{

@@ -51,7 +51,7 @@ class CommitDialog(wx.Dialog):
 class CommandCenterDialog(wx.Dialog):
     def __init__(self, parent, project_dir):
         # Slightly increased size to fit the new button
-        super().__init__(parent, title="GitHub Command Center", size=(500, 830))
+        super().__init__(parent, title="GitHub Command Center", size=(500, 730))
         self.project_dir = project_dir
         self.git_cmd = "git.exe" if os.name == "nt" else "git"
         self.engine = DiffEngine(self.project_dir)
