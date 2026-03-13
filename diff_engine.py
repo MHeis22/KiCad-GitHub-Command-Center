@@ -117,6 +117,53 @@ class DiffEngine:
             return result
         except Exception as e:
             return [f"Error extracting TODOs: {e}"]
+        
+    def _get_pcb_dimensions(self, file_path):
+        """Uses pcbnew to accurately calculate the board's physical dimensions based on Edge.Cuts."""
+        if not file_path or not os.path.exists(file_path):
+            return None
+        try:
+            import pcbnew
+            board = pcbnew.LoadBoard(file_path)
+            
+            # Get bounding box of the board edges (includes line thickness)
+            bbox = board.GetBoardEdgesBoundingBox()
+            
+            # Safely convert internal units to millimeters
+            if hasattr(pcbnew, 'ToMM'):
+                w_mm = pcbnew.ToMM(bbox.GetWidth())
+                h_mm = pcbnew.ToMM(bbox.GetHeight())
+            else:
+                w_mm = bbox.GetWidth() / 1000000.0
+                h_mm = bbox.GetHeight() / 1000000.0
+                
+            # Find the line thickness used on the Edge.Cuts layer
+            line_thickness_mm = 0.0
+            for item in board.GetDrawings():
+                if item.GetLayer() == pcbnew.Edge_Cuts:
+                    if hasattr(item, 'GetWidth'):
+                        if hasattr(pcbnew, 'ToMM'):
+                            line_thickness_mm = pcbnew.ToMM(item.GetWidth())
+                        else:
+                            line_thickness_mm = item.GetWidth() / 1000000.0
+                        break
+                        
+            # Subtract line thickness to match KiCad's dimension tools (centerline to centerline)
+            if w_mm > line_thickness_mm and h_mm > line_thickness_mm:
+                w_mm -= line_thickness_mm
+                h_mm -= line_thickness_mm
+                
+            if w_mm <= 0.1 or h_mm <= 0.1:
+                return None
+                
+            return {
+                "w": round(w_mm, 2), 
+                "h": round(h_mm, 2), 
+                "area": round(w_mm * h_mm, 2)
+            }
+        except Exception as e:
+            print(f"Dimension Extraction Error: {e}")
+            return None
 
     def _get_pcb_structure(self, file_path):
         components = {} 
@@ -338,6 +385,7 @@ class DiffEngine:
             bom_diff = ""
             pcb_logic_diff = ""
             health_data = {"new": [], "resolved": [], "unresolved": []}
+            dims_data = {"curr": None, "old": None}
 
             try:
                 # 1. Export Git Reference version
@@ -392,11 +440,16 @@ class DiffEngine:
                     }
 
                 # 3. Handle Logical Diffs (PCB and SCH)
+                if is_pcb:
+                    dims_data["curr"] = self._get_pcb_dimensions(file_path)
+
                 if has_old:
                     if is_pcb:
                         old_comp = self._get_pcb_structure(old_board_tmp)
                         curr_comp = self._get_pcb_structure(file_path)
                         pcb_logic_diff = self._compare_logic_data(old_comp, curr_comp)
+                        # FIX: Added the extraction of the old board's dimensions
+                        dims_data["old"] = self._get_pcb_dimensions(old_board_tmp)
                     else:
                         old_comp = self._get_sch_structure(old_board_tmp)
                         curr_comp = self._get_sch_structure(file_path)
@@ -447,7 +500,8 @@ class DiffEngine:
                         "curr": curr_todos,
                         "old": old_todos
                     },
-                    "health": health_data
+                    "health": health_data,
+                    "dimensions": dims_data
                 })
                 
             except Exception as e:

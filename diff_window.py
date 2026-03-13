@@ -40,6 +40,7 @@ class DiffWindow:
                 "bomDiff": d.get('bom_diff', ''),
                 "pcbLogicDiff": d.get('pcb_logic_diff', ''),
                 "todos": d.get('todos', {'curr': [], 'old': []}),
+                "dimensions": d.get('dimensions', {'curr': None, 'old': None}),
                 "health": d.get('health', {'new': [], 'resolved': [], 'unresolved': []})
             })
 
@@ -186,6 +187,8 @@ class DiffWindow:
                         <select id="layer-dropdown" onchange="changeLayer(this.value)"></select>
                     </div>
 
+                    <div id="dim-container" class="layer-selector hidden" style="color: var(--text-main); font-weight: bold; font-family: monospace;"></div>
+
                     <div class="view-toggle" id="view-toggles">
                         <button class="view-btn active" id="tab-visual" onclick="switchTab('visual')">Visual View</button>
                         <button class="view-btn" id="tab-health" onclick="switchTab('health')">DRC Violations</button>
@@ -271,6 +274,7 @@ class DiffWindow:
         const resetBtn = document.getElementById('reset-btn');
         const layerCont = document.getElementById('layer-container');
         const layerDrop = document.getElementById('layer-dropdown');
+        const dimContainer = document.getElementById('dim-container');
         const silkToggleCont = document.getElementById('silk-toggle-cont');
         const silkCheckbox = document.getElementById('silk-checkbox');
         
@@ -482,6 +486,25 @@ class DiffWindow:
             textDiffContainer.classList.add('hidden');
             todosContainer.classList.add('hidden');
             healthContainer.classList.add('hidden');
+
+            // --- Update PCB Dimensions ---
+            if (isPcb && currentTab === 'visual') {{
+                dimContainer.classList.remove('hidden');
+                const dims = file.dimensions || {{curr: null, old: null}};
+                
+                if (dims.curr) {{
+                    let dimText = `📐 ${{dims.curr.w}} x ${{dims.curr.h}} mm (${{dims.curr.area}} mm²)`;
+                    // Highlight if dimensions changed
+                    if (dims.old && (dims.old.w !== dims.curr.w || dims.old.h !== dims.curr.h)) {{
+                        dimText = `📐 <span style="text-decoration:line-through; color:#F44336; margin-right:4px;">${{dims.old.w}}x${{dims.old.h}}</span> ➔ <span style="color:#4CAF50; margin-left:4px;">${{dims.curr.w}} x ${{dims.curr.h}} mm</span>`;
+                    }}
+                    dimContainer.innerHTML = dimText;
+                }} else {{
+                    dimContainer.innerHTML = "📐 Dims: Unknown";
+                }}
+            }} else {{
+                dimContainer.classList.add('hidden');
+            }}
 
             // --- Logical Diffs (PCB or SCH) ---
             if (currentTab === 'netlist' || currentTab === 'bom' || currentTab === 'pcb-logic') {{
