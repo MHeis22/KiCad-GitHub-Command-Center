@@ -22,7 +22,7 @@ def load_settings():
             return json.load(f)
     except Exception:
         # Default settings if file doesn't exist
-        return {'colorblind': False, 'include_kicad_version': True}
+        return {'include_kicad_version': True}
 
 def save_settings(settings):
     """Saves settings to the user's home directory."""
@@ -43,20 +43,27 @@ def is_git_installed():
 
 class SettingsDialog(wx.Dialog):
     def __init__(self, parent, current_settings):
-        super().__init__(parent, title="Settings", size=(420, 180))
+        super().__init__(parent, title="Settings", size=(450, 250)) # Slightly taller for the new option
         self.settings = current_settings.copy()
         
         vbox = wx.BoxSizer(wx.VERTICAL)
         
-        # Colorblind toggle
-        self.cb_colorblind = wx.CheckBox(self, label="Colorblind Mode (Blue/Yellow diffs instead of Red/Green)")
-        self.cb_colorblind.SetValue(self.settings.get('colorblind', False))
-        vbox.Add(self.cb_colorblind, flag=wx.ALL, border=15)
-        
         # KiCad Version toggle
         self.cb_kicad_version = wx.CheckBox(self, label="Automatically append KiCad Version to commit messages")
         self.cb_kicad_version.SetValue(self.settings.get('include_kicad_version', True))
-        vbox.Add(self.cb_kicad_version, flag=wx.LEFT | wx.RIGHT | wx.BOTTOM, border=15)
+        vbox.Add(self.cb_kicad_version, flag=wx.LEFT | wx.RIGHT | wx.BOTTOM | wx.TOP, border=15)
+        
+        # Auto-Readme toggle
+        self.cb_readme = wx.CheckBox(self, label="Automatically update README.md with hardware summary")
+        self.cb_readme.SetValue(self.settings.get('auto_readme', False))
+        self.cb_readme.SetToolTip("Generates a sticky footer in your README with BOM and board stats.")
+        vbox.Add(self.cb_readme, flag=wx.LEFT | wx.RIGHT | wx.BOTTOM, border=15)
+
+        # Silent Pull toggle
+        self.cb_silent_pull = wx.CheckBox(self, label="Auto-Pull text files before pushing (Silent Pull)")
+        self.cb_silent_pull.SetValue(self.settings.get('silent_pull', False))
+        self.cb_silent_pull.SetToolTip("Automatically pulls remote changes to safe text files (README.md, .csv) before pushing.\nAborts pulling if remote KiCad schematic or PCB changes are detected.")
+        vbox.Add(self.cb_silent_pull, flag=wx.LEFT | wx.RIGHT | wx.BOTTOM, border=15)
         
         btn_sizer = wx.StdDialogButtonSizer()
         btn_ok = wx.Button(self, wx.ID_OK)
@@ -70,8 +77,9 @@ class SettingsDialog(wx.Dialog):
         self.CenterOnParent()
         
     def get_settings(self):
-        self.settings['colorblind'] = self.cb_colorblind.IsChecked()
         self.settings['include_kicad_version'] = self.cb_kicad_version.IsChecked()
+        self.settings['auto_readme'] = self.cb_readme.IsChecked()
+        self.settings['silent_pull'] = self.cb_silent_pull.IsChecked()
         return self.settings
 
 class CommitDialog(wx.Dialog):
@@ -392,7 +400,9 @@ class CommandCenterDialog(wx.Dialog):
         gitignore_path = os.path.join(self.project_dir, ".gitignore")
         if not os.path.exists(gitignore_path):
             content = (
-                "# KiCad backups and autosaves\n"
+                "# KiCad modern backups (KiCad 7+)\n"
+                "*-backups/\n\n"
+                "# KiCad legacy backups and autosaves\n"
                 "*.bak\n*.kicad_pcb-bak\n*.kicad_sch-bak\n*.kicad_pro-bak\n"
                 "*-save.pro\n*-save.kicad_pcb\n*-save.kicad_sch\n"
                 "*_autosave-*\n_autosave-*\n\n"
@@ -551,13 +561,12 @@ class CommandCenterDialog(wx.Dialog):
         try:
             selected_target = self.cb_targets.GetStringSelection()
             run_checks = self.cb_drc.GetValue()
-            cb_mode = self.settings.get('colorblind', False)
             
             diffs, summary = self.engine.render_all_diffs(show_unchanged=False, compare_target=selected_target, run_drc=run_checks)
             if not diffs:
                 wx.MessageBox(f"No local changes detected against {selected_target}.", "Info")
             else:
-                win = DiffWindow(diffs, summary, target_name=selected_target, kicad_version=self.kicad_version, colorblind=cb_mode)
+                win = DiffWindow(diffs, summary, target_name=selected_target, kicad_version=self.kicad_version)
                 win.Show()
         finally:
             if wx.IsBusy(): wx.EndBusyCursor()
@@ -567,13 +576,12 @@ class CommandCenterDialog(wx.Dialog):
         try:
             selected_target = self.cb_targets.GetStringSelection()
             run_checks = self.cb_drc.GetValue()
-            cb_mode = self.settings.get('colorblind', False)
             
             diffs, summary = self.engine.render_all_diffs(show_unchanged=True, compare_target=selected_target, run_drc=run_checks)
             if not diffs:
                 wx.MessageBox(f"No schematic or PCB files found to render.", "Info")
             else:
-                win = DiffWindow(diffs, summary, target_name=selected_target, kicad_version=self.kicad_version, colorblind=cb_mode)
+                win = DiffWindow(diffs, summary, target_name=selected_target, kicad_version=self.kicad_version)
                 win.Show()
         finally:
             if wx.IsBusy(): wx.EndBusyCursor()
@@ -618,6 +626,14 @@ class CommandCenterDialog(wx.Dialog):
                 create_gi = wx.MessageBox("Create a default .gitignore file for KiCad?", "Create .gitignore?", wx.YES_NO | wx.ICON_QUESTION)
                 if create_gi == wx.YES:
                     self.create_default_gitignore()
+
+        if self.settings.get('auto_readme', False):
+            try:
+                from .readme_generator import ReadmeGenerator
+                rg = ReadmeGenerator(self.project_dir, self.engine)
+                rg.update_readme(self.kicad_version)
+            except Exception as e:
+                print(f"Failed to autogenerate README: {e}")
         
         status_dict = self.engine.get_git_status(target="HEAD")
         changed_files = list(status_dict.keys())
@@ -693,6 +709,29 @@ class CommandCenterDialog(wx.Dialog):
                                     capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
             branch = res_br.stdout.strip()
             
+            # --- SILENT PULL LOGIC ---
+            if self.settings.get('silent_pull', False):
+                # Fetch remote updates without merging yet
+                subprocess.run([self.git_cmd, "-C", self.project_dir, "fetch", "origin", branch], creationflags=CREATE_NO_WINDOW)
+                
+                # Check what files are ahead on the remote server
+                res_diff = subprocess.run([self.git_cmd, "-C", self.project_dir, "diff", f"HEAD..origin/{branch}", "--name-only"],
+                                          capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
+                
+                changed_files = [f.strip() for f in res_diff.stdout.split('\n') if f.strip()]
+                
+                if changed_files:
+                    # Check if any dangerous KiCad files are in the remote changes
+                    dangerous_exts = ('.kicad_pcb', '.kicad_sch', '.kicad_pro', '.kicad_prl')
+                    has_dangerous = any(f.endswith(dangerous_exts) for f in changed_files)
+                    
+                    if not has_dangerous:
+                        # It's safe! Pull the text files using rebase (to cleanly stack local commits on top)
+                        subprocess.run([self.git_cmd, "-C", self.project_dir, "pull", "--rebase", "origin", branch], creationflags=CREATE_NO_WINDOW)
+                    else:
+                        print("Silent pull aborted: Remote KiCad changes detected. Letting push fail normally.")
+            # -------------------------
+
             res = subprocess.run([self.git_cmd, "-C", self.project_dir, "push", "-u", "origin", branch], 
                                  capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
             
