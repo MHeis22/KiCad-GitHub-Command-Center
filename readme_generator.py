@@ -1,11 +1,38 @@
 import os
 import re
 import glob
+import urllib.parse
 from .kicad_parser import get_pcb_dimensions, get_pcb_layers, get_bom_data
 
 class ReadmeGenerator:
-    def __init__(self, project_dir):
+    def __init__(self, project_dir, settings=None):
         self.project_dir = project_dir
+        self.settings = settings or {}
+
+    def format_link(self, val, mpn):
+        """Creates a clickable search link using the user's preferred search engine."""
+        clean_val = str(val).replace('|', '-') if val else "Unknown"
+        if mpn:
+            clean_mpn = str(mpn).strip()
+            # URL encode the MPN so characters like '#' don't break the link
+            encoded_mpn = urllib.parse.quote(clean_mpn)
+            
+            # Fetch preferences
+            engine = self.settings.get('search_engine', 'Octopart')
+            currency = self.settings.get('currency', 'USD')
+            
+            if engine == 'ComponentSearchEngine':
+                return f"[{clean_val}](https://componentsearchengine.com/search.html?searchString={encoded_mpn})"
+            else:
+                # Default is Octopart
+                url = f"https://octopart.com/search?q={encoded_mpn}"
+                # Only append currency if it's explicitly not USD
+                if currency and currency != 'USD':
+                    url += f"&currency={currency}"
+                    
+                return f"[{clean_val}]({url})"
+                
+        return clean_val
 
     def update_readme(self, kicad_version="Unknown KiCad Version"):
         pcb_files = glob.glob(os.path.join(self.project_dir, "*.kicad_pcb"))
@@ -106,16 +133,6 @@ class ReadmeGenerator:
         ignore_nets = ['vcc', 'vdd']
         filtered_power = sorted([p for p in power_nets if p.lower() not in ignore_nets])
 
-        # --- 2. Build Markdown Template ---
-        
-        def format_link(val, mpn):
-            """Creates a clickable Octopart search link if an MPN exists."""
-            clean_val = str(val).replace('|', '-') if val else "Unknown"
-            if mpn:
-                clean_mpn = str(mpn).strip()
-                return f"[{clean_val}](https://octopart.com/search?q={clean_mpn})"
-            return clean_val
-        
         md = [
             "<!-- KICAD_DIFF_GEN_START -->",
             "---",
@@ -141,7 +158,7 @@ class ReadmeGenerator:
             md.append("| Reference | Component | Function / Description |")
             md.append("| :--- | :--- | :--- |")
             for ic in core_ics:
-                comp_text = format_link(ic['val'], ic['mpn'])
+                comp_text = self.format_link(ic['val'], ic['mpn'])
                 clean_desc = str(ic['desc']).replace('|', '-')
                 md.append(f"| {ic['ref']} | {comp_text} | {clean_desc} |")
             md.append("")
@@ -151,7 +168,7 @@ class ReadmeGenerator:
             md.append("| Reference | Type | Component | Description |")
             md.append("| :--- | :--- | :--- | :--- |")
             for c in connectors:
-                comp_text = format_link(c['val'], c['mpn'])
+                comp_text = self.format_link(c['val'], c['mpn'])
                 clean_desc = str(c['desc']).replace('|', '-')
                 md.append(f"| {c['ref']} | {c['type']} | {comp_text} | {clean_desc} |")
             md.append("")
@@ -161,7 +178,7 @@ class ReadmeGenerator:
             md.append("| Reference | Value | Package / Footprint |")
             md.append("| :--- | :--- | :--- |")
             for c in crystals:
-                comp_text = format_link(c['val'], c['mpn'])
+                comp_text = self.format_link(c['val'], c['mpn'])
                 clean_fp = str(c['fp']).split(':')[-1].replace('|', '-') # Simplify footprint name
                 md.append(f"| {c['ref']} | {comp_text} | {clean_fp} |")
             md.append("")

@@ -528,7 +528,7 @@ class CommandCenterDialog(wx.Dialog):
 
         if self.settings.get('auto_readme', False):
             try:
-                rg = ReadmeGenerator(self.project_dir)
+                rg = ReadmeGenerator(self.project_dir, self.settings)
                 rg.update_readme(self.kicad_version)
             except Exception as e:
                 print(f"Failed to autogenerate README: {e}")
