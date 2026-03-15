@@ -468,7 +468,9 @@ class DiffEngine:
             if fname.endswith('.kicad_pcb') or fname.endswith('.kicad_sch'):
                 all_potential.add(fname)
                 
-        target_files = sorted(list(all_potential))
+        # Lambda key returns tuple (0, "name") if it's a pcb file, and (1, "name") otherwise.
+        target_files = sorted(list(all_potential), key=lambda x: (0 if x.endswith('.kicad_pcb') else 1, x))
+        
         diffs = []
         summary_lines = []
         

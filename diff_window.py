@@ -302,7 +302,7 @@ class DiffWindow:
                     <button class="btn-secondary" onclick="saveReport()">Save Report</button>
                     
                     <label id="silk-toggle-cont" class="checkbox-label hidden">
-                        <input type="checkbox" id="silk-checkbox" onchange="toggleSilk(this.checked)"> Show Silk
+                        <input type="checkbox" id="silk-checkbox" onchange="toggleSilk(this.checked)" checked> Show Silk
                     </label>
 
                     <div id="layer-container" class="layer-selector hidden">
@@ -382,7 +382,7 @@ class DiffWindow:
         
         let currentTab = 'visual'; 
         let currentLayer = 'Default';
-        let showSilk = false;
+        let showSilk = true;
 
         const fileListEl = document.getElementById('file-list');
         const wrapperOld = document.getElementById('viewer-wrapper-old');
