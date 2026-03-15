@@ -90,14 +90,14 @@ class DiffWindow:
             --text-muted: #666;
             --bg-hover: #dfdfdf;
             --bg-active: #cce4f7;
-            --pcb-bg: #0a0a0a; 
+            --pcb-bg: #ffffff; 
             --diff-bg: #fafafa;
             --diff-add: #e6ffed;
             --diff-del: #ffeef0;
             --diff-mod: #fff5e6;
         }}
 
-        /* --- Schematic Overlay & Version Watermark --- */
+        /* --- Version Watermark --- */
         #version-watermark {{
             position: fixed;
             bottom: 15px;
@@ -109,10 +109,24 @@ class DiffWindow:
             pointer-events: none;
             font-family: 'Consolas', 'Courier New', monospace;
         }}
+
+        /* --- Schematic Overlay Mode --- */
         .sch-overlay-mode {{ opacity: 1.0; mix-blend-mode: screen; z-index: 10; background: transparent; }}
         .sch-diff-old {{ filter: invert(1) sepia(100%) saturate(500%) hue-rotate(-50deg) brightness(0.9) !important; mix-blend-mode: normal; }}
         .sch-diff-new {{ filter: invert(1) sepia(100%) saturate(500%) hue-rotate(80deg) brightness(0.9) !important; mix-blend-mode: normal; }}
         .sch-diff-container {{ background: #111 !important; }}
+        .sch-diff-container .board-viewer {{ background: transparent !important; }}
+
+        /* --- PCB Overlay Mode --- */
+        .overlay-active {{ background: var(--pcb-bg) !important; }}
+        .overlay-active .board-viewer {{ background: transparent !important; }}
+        
+        body:not(.light-theme) .overlay-blend-mode {{ mix-blend-mode: screen; opacity: 1.0; z-index: 10; background: transparent; }}
+        body.light-theme .overlay-blend-mode {{ mix-blend-mode: multiply; opacity: 1.0; z-index: 10; background: transparent; }}
+        
+        /* Swapped colors based on feedback */
+        .diff-old-tint {{ filter: brightness(0) saturate(100%) invert(48%) sepia(79%) saturate(2476%) hue-rotate(86deg) brightness(118%) contrast(119%) !important; mix-blend-mode: normal; }}
+        .diff-new-tint {{ filter: brightness(0) saturate(100%) invert(27%) sepia(51%) saturate(2878%) hue-rotate(346deg) brightness(104%) contrast(97%) !important; mix-blend-mode: normal; }}
 
         body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: var(--bg-main); color: var(--text-main); margin: 0; display: flex; height: 100vh; overflow: hidden; transition: background 0.3s, color 0.3s; overscroll-behavior: none; }}
         
@@ -157,7 +171,7 @@ class DiffWindow:
         .viewer-absolute {{ position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; justify-content: center; align-items: center; pointer-events: none; }}
         .img-transform-wrapper {{ width: 100%; height: 100%; display: flex; justify-content: center; align-items: center; transform-origin: 0 0; position: absolute; }}
         
-        .board-viewer {{ width: 100%; height: 100%; border: 1px solid #444; background: var(--pcb-bg); border-radius: 4px; box-shadow: 0 4px 25px rgba(0,0,0,0.8); }}
+        .board-viewer {{ width: 100%; height: 100%; border: 1px solid #444; background: var(--pcb-bg); border-radius: 4px; box-shadow: 0 4px 25px rgba(0,0,0,0.8); transition: background 0.3s; }}
         .pdf-viewer {{ position: absolute; width: calc(100% - 40px); height: calc(100% - 40px); pointer-events: auto; }}
         
         img.board-viewer {{ position: absolute; width: 100%; height: 100%; object-fit: contain; pointer-events: none; filter: contrast(1.15) saturate(1.2); }} 
@@ -165,7 +179,6 @@ class DiffWindow:
         
         #swipe-slider-handle {{ position: absolute; top: 0; bottom: 0; left: 50%; width: 2px; background: #00bcd4; cursor: ew-resize; z-index: 100; touch-action: none; }}
         #swipe-slider-handle::after {{ content: '< >'; position: absolute; top: 50%; left: -14px; width: 30px; height: 30px; background: #00bcd4; color: #fff; border-radius: 50%; text-align: center; line-height: 30px; font-weight: bold; transform: translateY(-50%); font-family: sans-serif; box-shadow: 0 2px 5px rgba(0,0,0,0.5); pointer-events: none; }}
-        .overlay-mode {{ opacity: 0.8; background: transparent; mix-blend-mode: screen; z-index: 10; }}
         .silk-overlay {{ z-index: 20; opacity: 1.0; background: transparent; mix-blend-mode: screen; filter: brightness(1.1) contrast(1.2); }}
 
         #text-diff-container, #todos-container, #health-container, #bom-container {{ flex: 1; padding: 20px; overflow-y: auto; background: var(--diff-bg); font-family: 'Consolas', 'Courier New', monospace; font-size: 13px; white-space: pre-wrap; line-height: 1.5; transition: 0.3s; }}
@@ -812,11 +825,13 @@ class DiffWindow:
             // --- Visual View ---
             viewerContainer.classList.remove('hidden');
             
-            // Clear schematic overlay classes
-            wrapperNew.classList.remove('overlay-mode', 'sch-overlay-mode');
-            oldImgEl.classList.remove('sch-diff-old');
-            newImgEl.classList.remove('sch-diff-new');
-            viewerContainer.classList.remove('sch-diff-container');
+            // Clear overlay classes
+            viewerContainer.classList.remove('overlay-active', 'sch-diff-container');
+            wrapperNew.classList.remove('overlay-blend-mode', 'sch-overlay-mode');
+            oldImgEl.classList.remove('diff-old-tint', 'sch-diff-old');
+            newImgEl.classList.remove('diff-new-tint', 'sch-diff-new');
+            oldSilkImgEl.classList.remove('diff-old-tint', 'sch-diff-old');
+            newSilkImgEl.classList.remove('diff-new-tint', 'sch-diff-new');
             
             if (visual.old && visual.curr) {{ btnToggleDiff.classList.remove('hidden'); btnToggleOverlay.classList.remove('hidden'); btnToggleSwipe.classList.remove('hidden'); }} 
             else {{ btnToggleDiff.classList.add('hidden'); btnToggleOverlay.classList.add('hidden'); btnToggleSwipe.classList.add('hidden'); }}
@@ -865,7 +880,15 @@ class DiffWindow:
                     newImgEl.classList.add('sch-diff-new');
                     viewerContainer.classList.add('sch-diff-container');
                 }} else {{
-                    wrapperNew.classList.add('overlay-mode');
+                    viewerContainer.classList.add('overlay-active');
+                    wrapperNew.classList.add('overlay-blend-mode');
+                    oldImgEl.classList.add('diff-old-tint');
+                    newImgEl.classList.add('diff-new-tint');
+                    
+                    if (showSilk) {{
+                        oldSilkImgEl.classList.add('diff-old-tint');
+                        newSilkImgEl.classList.add('diff-new-tint');
+                    }}
                 }}
                 
                 statusTextEl.innerHTML = 'Showing: <strong style="color: #FF9800;">Overlay Mode</strong>';
