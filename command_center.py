@@ -9,6 +9,7 @@ from .diff_engine import DiffEngine
 from .diff_window import DiffWindow
 from .readme_generator import ReadmeGenerator
 from .bom_generator import BOMGenerator
+from .jlcpcb_exporter import JLCPCBExporter
 
 class CommandCenterDialog(wx.Dialog):
     def __init__(self, parent, project_dir):
@@ -98,7 +99,7 @@ class CommandCenterDialog(wx.Dialog):
         
         btn_switch = wx.Button(self.scroll_panel, label="Switch Working Branch", size=(-1, 40))
         btn_switch.Bind(wx.EVT_BUTTON, self.on_switch_branch)
-        
+
         stash_sizer = wx.BoxSizer(wx.HORIZONTAL)
         btn_stash = wx.Button(self.scroll_panel, label="Stash Local Changes", size=(-1, 40))
         btn_pop = wx.Button(self.scroll_panel, label="Pop Last Stash", size=(-1, 40))
@@ -110,6 +111,13 @@ class CommandCenterDialog(wx.Dialog):
         sizer_local.Add(self.btn_commit, flag=wx.EXPAND | wx.ALL, border=5)
         sizer_local.Add(btn_switch, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=5)
         sizer_local.Add(stash_sizer, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=5)
+        
+        # JLCPCB Gerber generation toggle 
+        self.cb_gerbers = wx.CheckBox(self.scroll_panel, label="Auto-Generate JLCPCB Gerbers on Commit")
+        self.cb_gerbers.SetValue(self.settings.get('generate_gerbers_zip', False))
+        self.cb_gerbers.Bind(wx.EVT_CHECKBOX, self.on_gerber_toggle)
+        sizer_local.Add(self.cb_gerbers, flag=wx.LEFT | wx.RIGHT | wx.BOTTOM, border=5)
+
         self.scroll_vbox.Add(sizer_local, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=10)
 
         # ==========================================
@@ -181,6 +189,10 @@ class CommandCenterDialog(wx.Dialog):
         self.update_git_status()
         self._check_and_prompt_git_encoding()
 
+    def on_gerber_toggle(self, event):
+        self.settings['generate_gerbers_zip'] = self.cb_gerbers.GetValue()
+        save_settings(self.settings)
+
     def _check_and_prompt_git_encoding(self, force_prompt=False):
         if not os.path.isdir(os.path.join(self.project_dir, ".git")):
             return False
@@ -234,6 +246,9 @@ class CommandCenterDialog(wx.Dialog):
         if dlg.ShowModal() == wx.ID_OK:
             self.settings = dlg.get_settings()
             save_settings(self.settings)
+            
+            # Sync local checkbox with newly saved setting
+            self.cb_gerbers.SetValue(self.settings.get('generate_gerbers_zip', False))
         dlg.Destroy()
 
     def on_target_change(self, event):
@@ -535,12 +550,19 @@ class CommandCenterDialog(wx.Dialog):
             except Exception as e:
                 wx.MessageBox(f"Failed to update README.md:\n{e}", "Readme Generation Warning", wx.ICON_WARNING)
         
-        # --- Generate BOMs ---
+        # --- Generate BOMs & Gerbers ---
         try:
             bom_gen = BOMGenerator(self.project_dir, self.settings)
             bom_gen.generate_boms()
+            
+            # Tie the gerber generation appropriately to the commit action 
+            if self.settings.get('generate_gerbers_zip', False):
+                board = pcbnew.GetBoard()
+                if board:
+                    exporter = JLCPCBExporter(board)
+                    exporter.generate_zip(self.project_dir, zip_filename="gerbers")
         except Exception as e:
-            wx.MessageBox(f"Failed to generate BOMs:\n{e}", "BOM Generation Warning", wx.ICON_WARNING)
+            wx.MessageBox(f"Failed to generate BOMs or Gerbers:\n{e}", "Generation Warning", wx.ICON_WARNING)
         
         status_dict = self.engine.get_git_status(target="HEAD")
         changed_files = list(status_dict.keys())

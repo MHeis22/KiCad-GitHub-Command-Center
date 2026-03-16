@@ -2,8 +2,8 @@ import wx
 
 class SettingsDialog(wx.Dialog):
     def __init__(self, parent, current_settings):
-        # Increased window height from 380 to 520 to accommodate the new BOM inputs
-        super().__init__(parent, title="Settings", size=(470, 520)) 
+        # Slightly reduced window height as we moved the gerbers toggle
+        super().__init__(parent, title="Settings", size=(470, 480)) 
         self.settings = current_settings.copy()
         
         vbox = wx.BoxSizer(wx.VERTICAL)
@@ -47,7 +47,7 @@ class SettingsDialog(wx.Dialog):
         
         mpn_sizer = wx.BoxSizer(wx.HORIZONTAL)
         mpn_sizer.Add(wx.StaticText(self, label="Custom MPN Field Name:"), flag=wx.ALIGN_CENTER_VERTICAL|wx.RIGHT, border=5)
-        self.tc_mpn = wx.TextCtrl(self, value=self.settings.get('mpn_field_name', 'MPN'))
+        self.tc_mpn = wx.TextCtrl(self, value=self.settings.get('mpn_field_name', 'Manufacturer_Part_Number'))
         self.tc_mpn.SetToolTip("The exact property name used in your KiCad symbols for the part number (e.g., LCSC, MPN, Part Number).")
         mpn_sizer.Add(self.tc_mpn, proportion=1)
         bom_sizer.Add(mpn_sizer, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=10)
