@@ -167,7 +167,7 @@ def get_pcb_structure(file_path):
                 
                 if ref_match:
                     ref = ref_match.group(1)
-                    if ref.startswith('TP'): continue # EXCLUDE TEST POINTS
+                    if ref.startswith('TP') or ref.startswith('#'): continue # EXCLUDE TEST POINTS AND VIRTUAL PARTS
                     
                     val = val_match.group(1) if val_match else ""
                     components[ref] = {'fp': name, 'val': val}
@@ -191,7 +191,7 @@ def get_sch_structure(file_path):
                 
                 if ref_match:
                     ref = ref_match.group(1)
-                    if ref == "Reference" or ref.startswith('TP'): continue # EXCLUDE TEST POINTS
+                    if ref == "Reference" or ref.startswith('TP') or ref.startswith('#'): continue # EXCLUDE TEST POINTS AND VIRTUAL PARTS
                     
                     fp = fp_match.group(1) if fp_match and fp_match.group(1) else (lib_match.group(1) if lib_match else "Unknown")
                     val = val_match.group(1) if val_match else ""
@@ -200,7 +200,7 @@ def get_sch_structure(file_path):
         print(f"SCH Structure Error: {e}")
     return components
 
-def get_bom_data(file_path, include_excluded_from_bom=False):
+def get_bom_data(file_path, include_excluded_from_bom=False, mpn_field=None):
     """Extracts structured BOM data, respecting Exclude from Board / DNP flags."""
     bom = {}
     if not file_path or not os.path.exists(file_path):
@@ -210,10 +210,6 @@ def get_bom_data(file_path, include_excluded_from_bom=False):
             content = f.read()
             blocks = re.split(r'\(\s*symbol\s+', content)[1:]
             for block in blocks:
-                # Respect KiCad exclusion flags
-                if re.search(r'\(\s*on_board\s+no\s*\)', block):
-                    continue # Excluded from board (DNP - always skip)
-                    
                 # Skip if excluded from BOM unless explicitly told to include them
                 if not include_excluded_from_bom and re.search(r'\(\s*in_bom\s+no\s*\)', block):
                     continue 
@@ -222,14 +218,20 @@ def get_bom_data(file_path, include_excluded_from_bom=False):
                 if not ref_match: continue
                 ref = ref_match.group(1)
                 
-                if ref == "Reference" or ref.startswith('TP'): continue # EXCLUDE TEMPLATES AND TEST POINTS
+                if ref == "Reference" or ref.startswith('TP') or ref.startswith('#'): continue # EXCLUDE TEMPLATES, TEST POINTS, AND VIRTUAL PARTS
                 
                 val_match = re.search(r'\(\s*property\s+"Value"\s+"([^"]*)"', block)
                 fp_match  = re.search(r'\(\s*property\s+"Footprint"\s+"([^"]*)"', block)
                 desc_match = re.search(r'\(\s*property\s+"Description"\s+"([^"]*)"', block)
                 
-                # Catch common MPN property variants
-                mpn_match = re.search(r'\(\s*property\s+"(?:MPN|Part Number|Manufacturer Part Number|Manufacturer_Part_Number|LCSC Part|LCSC)"\s+"([^"]*)"', block, re.IGNORECASE)
+                # Catch common MPN property variants, prioritizing user's custom field
+                if mpn_field:
+                    safe_field = re.escape(mpn_field)
+                    mpn_regex = rf'\(\s*property\s+"(?:{safe_field}|MPN|Part Number|Manufacturer Part Number|Manufacturer_Part_Number|LCSC Part|LCSC)"\s+"([^"]*)"'
+                else:
+                    mpn_regex = r'\(\s*property\s+"(?:MPN|Part Number|Manufacturer Part Number|Manufacturer_Part_Number|LCSC Part|LCSC)"\s+"([^"]*)"'
+                
+                mpn_match = re.search(mpn_regex, block, re.IGNORECASE)
                 
                 bom[ref] = {
                     'val': val_match.group(1) if val_match else "",

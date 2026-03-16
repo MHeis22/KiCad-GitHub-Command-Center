@@ -164,7 +164,7 @@ class ReadmeGenerator:
                         if ref_match:
                             ref = ref_match.group(1)
                             val = val_match.group(1) if val_match else ""
-                            if ref != "Reference" and not ref.startswith("TP"):
+                            if ref != "Reference" and not ref.startswith("TP") and not ref.startswith("#"):
                                 data['dnp_list'].add(f"{ref} ({val})")
                                 
         return data
@@ -213,9 +213,11 @@ class ReadmeGenerator:
         mount_holes = []
 
         bom = {}
+        mpn_field_setting = self.settings.get('mpn_field_name', 'MPN')
         if sch_files:
             for sch in sch_files:
-                sch_bom = get_bom_data(sch, include_excluded_from_bom=True)
+                # Pass mpn_field into get_bom_data so it renders the correct part numbers in README
+                sch_bom = get_bom_data(sch, include_excluded_from_bom=True, mpn_field=mpn_field_setting)
                 bom.update(sch_bom)
                 all_todos.update(extract_todos(sch))
                 

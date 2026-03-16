@@ -2,8 +2,8 @@ import wx
 
 class SettingsDialog(wx.Dialog):
     def __init__(self, parent, current_settings):
-        # Increased window height from 320 to 380 to accommodate the new inputs
-        super().__init__(parent, title="Settings", size=(470, 380)) 
+        # Increased window height from 380 to 520 to accommodate the new BOM inputs
+        super().__init__(parent, title="Settings", size=(470, 520)) 
         self.settings = current_settings.copy()
         
         vbox = wx.BoxSizer(wx.VERTICAL)
@@ -31,8 +31,30 @@ class SettingsDialog(wx.Dialog):
         self.cb_silent_pull.SetToolTip("Automatically pulls remote changes to safe text files (README.md, .csv) before pushing.\nAborts pulling if remote KiCad schematic or PCB changes are detected.")
         vbox.Add(self.cb_silent_pull, flag=wx.LEFT | wx.RIGHT | wx.BOTTOM, border=15)
 
-        # --- Search Engine & Currency Selections ---
+        # --- BOM Generation ---
+        bom_box = wx.StaticBox(self, label="BOM Generation (Auto-run on Commit)")
+        bom_sizer = wx.StaticBoxSizer(bom_box, wx.VERTICAL)
         
+        self.cb_bom_dist = wx.CheckBox(self, label="Generate Distributor BOM (Qty, Ref, MPN)")
+        self.cb_bom_dist.SetValue(self.settings.get('generate_bom_dist', False))
+        self.cb_bom_dist.SetToolTip("Compact CSV containing only what automated distributor tools need.")
+        bom_sizer.Add(self.cb_bom_dist, flag=wx.LEFT | wx.RIGHT | wx.TOP, border=10)
+        
+        self.cb_bom_eng = wx.CheckBox(self, label="Generate Engineering BOM (Includes Value & Footprint)")
+        self.cb_bom_eng.SetValue(self.settings.get('generate_bom_eng', False))
+        self.cb_bom_eng.SetToolTip("Detailed CSV easier for human review.")
+        bom_sizer.Add(self.cb_bom_eng, flag=wx.LEFT | wx.RIGHT | wx.TOP | wx.BOTTOM, border=10)
+        
+        mpn_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        mpn_sizer.Add(wx.StaticText(self, label="Custom MPN Field Name:"), flag=wx.ALIGN_CENTER_VERTICAL|wx.RIGHT, border=5)
+        self.tc_mpn = wx.TextCtrl(self, value=self.settings.get('mpn_field_name', 'MPN'))
+        self.tc_mpn.SetToolTip("The exact property name used in your KiCad symbols for the part number (e.g., LCSC, MPN, Part Number).")
+        mpn_sizer.Add(self.tc_mpn, proportion=1)
+        bom_sizer.Add(mpn_sizer, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=10)
+        
+        vbox.Add(bom_sizer, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=15)
+
+        # --- Search Engine & Currency Selections ---
         engine_choices = ["Octopart", "ComponentSearchEngine"]
         current_engine = self.settings.get('search_engine', 'Octopart')
         
@@ -67,6 +89,10 @@ class SettingsDialog(wx.Dialog):
         self.settings['auto_readme'] = self.cb_readme.IsChecked()
         self.settings['readme_drc'] = self.cb_readme_drc.IsChecked()
         self.settings['silent_pull'] = self.cb_silent_pull.IsChecked()
+        
+        self.settings['generate_bom_dist'] = self.cb_bom_dist.IsChecked()
+        self.settings['generate_bom_eng'] = self.cb_bom_eng.IsChecked()
+        self.settings['mpn_field_name'] = self.tc_mpn.GetValue().strip() or "MPN"
         
         # Capture the new dropdown settings
         self.settings['search_engine'] = self.cb_engine.GetStringSelection()

@@ -8,6 +8,7 @@ from .ui_dialogs import SettingsDialog, CommitDialog
 from .diff_engine import DiffEngine
 from .diff_window import DiffWindow
 from .readme_generator import ReadmeGenerator
+from .bom_generator import BOMGenerator
 
 class CommandCenterDialog(wx.Dialog):
     def __init__(self, parent, project_dir):
@@ -533,6 +534,13 @@ class CommandCenterDialog(wx.Dialog):
                 rg.update_readme(self.kicad_version)
             except Exception as e:
                 wx.MessageBox(f"Failed to update README.md:\n{e}", "Readme Generation Warning", wx.ICON_WARNING)
+        
+        # --- Generate BOMs ---
+        try:
+            bom_gen = BOMGenerator(self.project_dir, self.settings)
+            bom_gen.generate_boms()
+        except Exception as e:
+            wx.MessageBox(f"Failed to generate BOMs:\n{e}", "BOM Generation Warning", wx.ICON_WARNING)
         
         status_dict = self.engine.get_git_status(target="HEAD")
         changed_files = list(status_dict.keys())
