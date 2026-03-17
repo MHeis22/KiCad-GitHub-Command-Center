@@ -20,8 +20,11 @@ GitHub Command Center brings powerful version control and manufacturing automati
 
 ## SCREENSHOTS
 -----------
-<img src="assets/MainMenu.png" height="500">
-<img src="assets/WebView.png" height="400">
+<p align="center">
+  <img src="assets/MainMenu.png" height="550">
+  <br><br>
+  <img src="assets/WebView.png" height="400">
+</p>
 
 
 ## INSTALLATION
@@ -44,7 +47,9 @@ To install the plugin manually, follow these steps:
 ------------------------
 Click the "⚙ Settings" button in the bottom left of the Command Center to configure automated behaviors:
 
-<img src="assets/Settings.png" height="450">
+<p align="center">
+  <img src="assets/Settings.png" height="450">
+</p>
 
 * BOM Generation: Choose between Distributor-friendly formats (Qty, Ref, MPN) or detailed Engineering formats.
 * Auto-Readme: Toggle the automatic sticky-footer generation that logs your board dimensions, DRC status, and part counts directly to your GitHub repo's README.
