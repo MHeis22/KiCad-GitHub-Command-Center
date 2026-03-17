@@ -1,4 +1,5 @@
 ﻿# GITHUB COMMAND CENTER
+[![Downloads](https://img.shields.io/github/downloads/mheis22/kicad-github-command-center/total.svg?style=flat-square)](https://github.com/mheis22/kicad-github-command-center/releases)
 =====================
 
 Downloads: https://github.com/mheis22/kicad-github-command-center/releases
