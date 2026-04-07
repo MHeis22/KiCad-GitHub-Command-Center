@@ -263,7 +263,7 @@
                 </div>
                 
                 <div class="controls">
-                    <div class="status-indicator" id="status-text">Select a file...</div>
+                    <div class="status-indicator" id="status-text">Decompressing data...</div>
                     <button onclick="toggleSwipe()" id="btn-toggle-swipe" class="hidden btn-secondary">Swipe</button>
                     <button onclick="toggleOverlay()" id="btn-toggle-overlay" class="hidden btn-secondary">Overlay</button>
                     <button onclick="toggleDiff()" id="btn-toggle-diff" class="hidden">Toggle (Space)</button>
@@ -312,7 +312,7 @@
     </div>
 
     <script>
-        const diffData = __DIFF_JSON__;
+        let diffData = []; // Will be populated via DecompressionStream
         const targetName = "__TARGET_NAME__";
         let activeIndex = -1;
         let showOld = false;
@@ -386,6 +386,22 @@
             a.click();
             document.body.removeChild(a);
             URL.revokeObjectURL(url);
+        }
+
+        // === URL CACHE GENERATOR FOR RAW DATA ===
+        function resolveUrl(vObj, currObj) {
+            if (!vObj || !vObj.data) return "";
+            if (vObj.data === "SAME_AS_CURR") return resolveUrl(currObj, null);
+            if (vObj.urlCache) return vObj.urlCache;
+
+            if (vObj.is_svg) {
+                // Instantly generate a blob out of the raw text so we can treat it like an image url
+                const blob = new Blob([vObj.data], { type: 'image/svg+xml' });
+                vObj.urlCache = URL.createObjectURL(blob);
+            } else {
+                vObj.urlCache = vObj.data; // It's already a Data URI (like PDF base64)
+            }
+            return vObj.urlCache;
         }
 
         // === ZOOM AND PAN LOGIC (MOUSE & TOUCH) ===
@@ -666,8 +682,10 @@
             if (activeIndex < 0) return;
             const file = diffData[activeIndex];
             const visual = file.visuals[currentLayer] || {};
-            const isSch = file.name.endsWith('.kicad_sch');
-            const isPcb = file.name.endsWith('.kicad_pcb');
+            
+            // Build temporary blob URLs for visual data out of raw JSON text strings
+            const currUrl = resolveUrl(visual.curr, null);
+            const oldUrl = resolveUrl(visual.old, visual.curr);
             
             let silkLayer = null;
             if (showSilk) {
@@ -675,6 +693,11 @@
                 else if (currentLayer.startsWith('B.')) silkLayer = 'B.Silkscreen';
             }
             const silkVisual = silkLayer ? file.visuals[silkLayer] : null;
+            const currSilkUrl = silkVisual ? resolveUrl(silkVisual.curr, null) : "";
+            const oldSilkUrl = silkVisual ? resolveUrl(silkVisual.old, silkVisual.curr) : "";
+
+            const isSch = file.name.endsWith('.kicad_sch');
+            const isPcb = file.name.endsWith('.kicad_pcb');
 
             document.getElementById('tab-netlist').classList.toggle('hidden', !isSch);
             document.getElementById('tab-bom').classList.toggle('hidden', !isSch);
@@ -792,10 +815,10 @@
             oldSilkImgEl.classList.remove('diff-old-tint', 'sch-diff-old');
             newSilkImgEl.classList.remove('diff-new-tint', 'sch-diff-new');
             
-            if (visual.old && visual.curr) { btnToggleDiff.classList.remove('hidden'); btnToggleOverlay.classList.remove('hidden'); btnToggleSwipe.classList.remove('hidden'); } 
+            if (oldUrl && currUrl) { btnToggleDiff.classList.remove('hidden'); btnToggleOverlay.classList.remove('hidden'); btnToggleSwipe.classList.remove('hidden'); } 
             else { btnToggleDiff.classList.add('hidden'); btnToggleOverlay.classList.add('hidden'); btnToggleSwipe.classList.add('hidden'); }
             
-            const isPdf = (visual.curr && visual.curr.startsWith('data:application/pdf')) || (visual.old && visual.old.startsWith('data:application/pdf'));
+            const isPdf = (currUrl && currUrl.startsWith('data:application/pdf')) || (oldUrl && oldUrl.startsWith('data:application/pdf'));
 
             if (isSch && !isPdf && !overlayMode) {
                 newImgEl.style.backgroundColor = '#ffffff'; oldImgEl.style.backgroundColor = '#ffffff';
@@ -810,28 +833,28 @@
 
             if (isPdf) {
                 resetBtn.classList.add('hidden');
-                if (visual.old) { oldPdfEl.src = visual.old; oldPdfEl.classList.remove('hidden'); }
-                if (visual.curr) { newPdfEl.src = visual.curr; newPdfEl.classList.remove('hidden'); }
-                if (silkVisual && silkVisual.old) { oldSilkPdfEl.src = silkVisual.old; oldSilkPdfEl.classList.remove('hidden'); }
-                if (silkVisual && silkVisual.curr) { newSilkPdfEl.src = silkVisual.curr; newSilkPdfEl.classList.remove('hidden'); }
+                if (oldUrl) { oldPdfEl.src = oldUrl; oldPdfEl.classList.remove('hidden'); }
+                if (currUrl) { newPdfEl.src = currUrl; newPdfEl.classList.remove('hidden'); }
+                if (oldSilkUrl) { oldSilkPdfEl.src = oldSilkUrl; oldSilkPdfEl.classList.remove('hidden'); }
+                if (currSilkUrl) { newSilkPdfEl.src = currSilkUrl; newSilkPdfEl.classList.remove('hidden'); }
             } else {
                 resetBtn.classList.remove('hidden');
                 imgWrapperOld.classList.remove('hidden'); imgWrapperNew.classList.remove('hidden');
-                if (visual.old) { oldImgEl.src = visual.old; oldImgEl.classList.remove('hidden'); }
-                if (visual.curr) { newImgEl.src = visual.curr; newImgEl.classList.remove('hidden'); }
-                if (silkVisual && silkVisual.old) { oldSilkImgEl.src = silkVisual.old; oldSilkImgEl.classList.remove('hidden'); }
-                if (silkVisual && silkVisual.curr) { newSilkImgEl.src = silkVisual.curr; newSilkImgEl.classList.remove('hidden'); }
+                if (oldUrl) { oldImgEl.src = oldUrl; oldImgEl.classList.remove('hidden'); }
+                if (currUrl) { newImgEl.src = currUrl; newImgEl.classList.remove('hidden'); }
+                if (oldSilkUrl) { oldSilkImgEl.src = oldSilkUrl; oldSilkImgEl.classList.remove('hidden'); }
+                if (currSilkUrl) { newSilkImgEl.src = currSilkUrl; newSilkImgEl.classList.remove('hidden'); }
             }
 
             wrapperOld.classList.add('hidden'); wrapperNew.classList.add('hidden');
             wrapperNew.style.clipPath = ''; sliderHandle.classList.add('hidden'); swipeLabels.classList.add('hidden');
 
-            if (swipeMode && visual.old && visual.curr) {
+            if (swipeMode && oldUrl && currUrl) {
                 wrapperOld.classList.remove('hidden'); wrapperNew.classList.remove('hidden'); 
                 sliderHandle.classList.remove('hidden'); swipeLabels.classList.remove('hidden');
                 wrapperNew.style.clipPath = `polygon(0 0, ${swipePos}% 0, ${swipePos}% 100%, 0 100%)`; sliderHandle.style.left = swipePos + '%';
                 statusTextEl.innerHTML = 'Showing: <strong style="color: #00bcd4;">Swipe Mode</strong>';
-            } else if (overlayMode && visual.old && visual.curr) {
+            } else if (overlayMode && oldUrl && currUrl) {
                 wrapperOld.classList.remove('hidden'); wrapperNew.classList.remove('hidden'); 
                 swipeLabels.classList.remove('hidden'); // Show labels for color correlation in Overlay Mode
                 
@@ -848,17 +871,17 @@
                     if (showSilk) { oldSilkImgEl.classList.add('diff-old-tint'); newSilkImgEl.classList.add('diff-new-tint'); }
                 }
                 statusTextEl.innerHTML = 'Showing: <strong class="color-old">Overlay Mode</strong>';
-            } else if (showOld && visual.old) {
+            } else if (showOld && oldUrl) {
                 wrapperOld.classList.remove('hidden'); statusTextEl.innerHTML = 'Showing: <strong class="color-err">' + targetName + '</strong>';
             } else {
-                if (visual.curr) { wrapperNew.classList.remove('hidden'); if (!visual.old && file.status !== "Unchanged") noOldMsgEl.classList.remove('hidden'); }
+                if (currUrl) { wrapperNew.classList.remove('hidden'); if (!oldUrl && file.status !== "Unchanged") noOldMsgEl.classList.remove('hidden'); }
                 statusTextEl.innerHTML = 'Showing: <strong class="color-new">Local Changes</strong>';
             }
         }
 
-        function toggleSwipe() { if (activeIndex < 0 || currentTab !== 'visual') return; const visual = diffData[activeIndex].visuals[currentLayer]; if (visual && visual.old && visual.curr) { swipeMode = !swipeMode; if (swipeMode) { overlayMode = false; showOld = false; } renderView(); } }
-        function toggleOverlay() { if (activeIndex < 0 || currentTab !== 'visual') return; const visual = diffData[activeIndex].visuals[currentLayer]; if (visual && visual.old && visual.curr) { overlayMode = !overlayMode; if (overlayMode) { swipeMode = false; showOld = false; } renderView(); } }
-        function toggleDiff() { if (activeIndex < 0 || currentTab !== 'visual') return; const visual = diffData[activeIndex].visuals[currentLayer]; if (visual && visual.old) { showOld = !showOld; overlayMode = false; swipeMode = false; renderView(); } }
+        function toggleSwipe() { if (activeIndex < 0 || currentTab !== 'visual') return; const visual = diffData[activeIndex].visuals[currentLayer]; if (visual && visual.old && visual.old.data && visual.curr && visual.curr.data) { swipeMode = !swipeMode; if (swipeMode) { overlayMode = false; showOld = false; } renderView(); } }
+        function toggleOverlay() { if (activeIndex < 0 || currentTab !== 'visual') return; const visual = diffData[activeIndex].visuals[currentLayer]; if (visual && visual.old && visual.old.data && visual.curr && visual.curr.data) { overlayMode = !overlayMode; if (overlayMode) { swipeMode = false; showOld = false; } renderView(); } }
+        function toggleDiff() { if (activeIndex < 0 || currentTab !== 'visual') return; const visual = diffData[activeIndex].visuals[currentLayer]; if (visual && visual.old && visual.old.data) { showOld = !showOld; overlayMode = false; swipeMode = false; renderView(); } }
 
         document.addEventListener('keydown', function(event) {
             if(document.activeElement.tagName === 'SELECT' || document.activeElement.tagName === 'INPUT') return;
@@ -871,7 +894,49 @@
             else if (event.code === 'KeyS') { silkCheckbox.checked = !silkCheckbox.checked; toggleSilk(silkCheckbox.checked); }
         });
 
-        init();
+        // Application Entry Point - Decompress JSON stream
+        async function bootViewer() {
+            try {
+                const b64Data = "__DIFF_B64_GZIP__";
+                
+                // 1. Safety Check: Did the Python backend actually run and replace the payload?
+                if (b64Data === "__" + "DIFF_B64_GZIP" + "__") {
+                    throw new Error("Synchronization Error: The literal string '__DIFF_B64_GZIP__' was found. Please make sure you updated 'diff_window.py' so it properly injects the compressed payload.");
+                }
+
+                // Decode base64 to binary
+                const binaryString = atob(b64Data);
+                const bytes = new Uint8Array(binaryString.length);
+                for (let i = 0; i < binaryString.length; i++) {
+                    bytes[i] = binaryString.charCodeAt(i);
+                }
+                
+                // 2. Bypass Firefox Blob chunking bug by using Fetch API's native Response body pipe
+                const stream = new Response(bytes).body.pipeThrough(new DecompressionStream('gzip'));
+                const text = await new Response(stream).text();
+                
+                diffData = JSON.parse(text);
+                init();
+            } catch (err) {
+                console.error("Decompression failed:", err);
+                document.getElementById('status-text').innerHTML = '<span class="color-err">Failed to decompress data.</span>';
+                
+                // Print the EXACT javascript error to the screen so we aren't guessing
+                document.getElementById('viewer-container').innerHTML = `
+                    <div style="text-align: center; padding: 40px; color: var(--text-main);">
+                        <h2 class="color-err">⚠️ Viewer Initialization Failed</h2>
+                        <p style="font-family: monospace; background: var(--bg-sidebar); padding: 15px; border-radius: 4px; border: 1px solid var(--border-color); text-align: left; display: inline-block;">
+                            ${err.name}: ${err.message}
+                        </p>
+                        <p style="color: var(--text-muted); font-size: 14px; margin-top: 20px;">
+                            <strong>Diagnosis Tips:</strong><br>
+                            If you see <code>InvalidCharacterError</code>, it usually means you updated this HTML file but forgot to update <code>diff_window.py</code>.
+                        </p>
+                    </div>`;
+            }
+        }
+
+        bootViewer();
     </script>
 </body>
 </html>
