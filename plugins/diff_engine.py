@@ -6,6 +6,7 @@ import shutil
 import difflib
 import re
 import glob
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from .utils import CREATE_NO_WINDOW
 from .kicad_parser import (
     get_pcb_layers, get_pcb_dimensions, get_pcb_structure,
@@ -66,7 +67,7 @@ class DiffEngine:
         """Returns a list of local branches and recent commits for comparison."""
         targets = ["HEAD"]
         try:
-            # 1. Fetch Local Branches (This is what got accidentally deleted!)
+            # 1. Fetch Local Branches
             res = subprocess.run([self.git_cmd, "-C", self.project_dir, "branch", "--format=%(refname:short)"], 
                                  capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
             for line in res.stdout.split('\n'):
@@ -74,7 +75,7 @@ class DiffEngine:
                 if target and target not in targets:
                     targets.append(target)
             
-            # 2. Fetch Recent Commits (With your new truncation fix)
+            # 2. Fetch Recent Commits
             res = subprocess.run([self.git_cmd, "-C", self.project_dir, "log", "-n", "15", "--format=%h (%s)"], 
                                  capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
             for line in res.stdout.split('\n'):
@@ -126,7 +127,6 @@ class DiffEngine:
             
         try:
             cmd = [self.kicad_cli, "pcb" if is_pcb else "sch", "drc" if is_pcb else "erc", "--format", "json", "--output", out_json, file_path]
-            
             subprocess.run(cmd, capture_output=True, cwd=self.project_dir, creationflags=CREATE_NO_WINDOW)
             
             if os.path.exists(out_json):
@@ -182,6 +182,43 @@ class DiffEngine:
                 
         return out_path
 
+    def _run_cmd_task(self, task):
+        """Worker function that executes CLI tasks concurrently"""
+        try:
+            if task['type'] == 'svg':
+                out_path = task['out_path']
+                
+                # Cleanup existing tmp outputs to prevent overlaps
+                for old_temp in glob.glob(out_path.replace(".svg", "*.svg")):
+                    try:
+                        if os.path.isdir(old_temp): shutil.rmtree(old_temp)
+                        else: os.remove(old_temp)
+                    except: pass
+
+                subprocess.run(task['cli_args'] + [task['file_path'], "--output", out_path], 
+                               capture_output=True, cwd=self.project_dir, creationflags=CREATE_NO_WINDOW)
+                
+                if not task['is_pcb']:
+                    out_path = self._find_correct_svg(out_path, task['base_name'])
+
+                if os.path.exists(out_path) and os.path.getsize(out_path) > 0 and not os.path.isdir(out_path):
+                    task['result'] = out_path
+                else:
+                    task['result'] = None
+                    
+            elif task['type'] == 'netlist':
+                subprocess.run(task['cli_args'], capture_output=True, cwd=self.project_dir, creationflags=CREATE_NO_WINDOW)
+                task['result'] = task['out_path']
+                
+            elif task['type'] == 'drc':
+                task['result'] = self._run_rule_check(task['file_path'], task['is_pcb'])
+                
+        except Exception as e:
+            print(f"Task failed: {e}")
+            task['result'] = None
+        
+        return task
+
     def render_all_diffs(self, show_unchanged=False, compare_target="HEAD", run_drc=False):
         """
         Scans for .kicad_pcb and .kicad_sch. Exports visual, logical files, and optionally DRC.
@@ -197,7 +234,6 @@ class DiffEngine:
             if fname.endswith('.kicad_pcb') or fname.endswith('.kicad_sch'):
                 all_potential.add(fname)
                 
-        # Lambda key returns tuple (0, "name") if it's a pcb file, and (1, "name") otherwise.
         target_files = sorted(list(all_potential), key=lambda x: (0 if x.endswith('.kicad_pcb') else 1, x))
         
         diffs = []
@@ -237,7 +273,7 @@ class DiffEngine:
             if is_pcb:
                 layers_to_export = get_pcb_layers(file_path)
             
-            visuals = {} 
+            visuals = {layer: {"curr": None, "old": None} for layer in layers_to_export}
             netlist_diff = ""
             bom_data = {"curr": {}, "old": {}}
             pcb_logic_diff = ""
@@ -245,7 +281,7 @@ class DiffEngine:
             dims_data = {"curr": None, "old": None}
 
             try:
-                # 1. Export Git Reference version
+                # 1. Export Git Reference version to disk (Synchronous, extremely fast)
                 has_old = False
                 if status_code != 'A' and status_code != '??':
                     with open(old_board_tmp, "wb") as f:
@@ -256,7 +292,12 @@ class DiffEngine:
                         if pro_path:
                             shutil.copy2(pro_path, old_pro_tmp)
 
-                # 2. Iterate through layers for visual diff
+                # ==============================================================
+                # 2. Setup Parallel Tasks
+                # ==============================================================
+                tasks = []
+
+                # SVG Export Tasks
                 for layer in layers_to_export:
                     ext = "svg"
                     layer_safe = layer.replace('.', '_')
@@ -264,12 +305,6 @@ class DiffEngine:
                     curr_out = os.path.join(self.tmp_dir, f"curr_{safe_name}_{layer_safe}.{ext}")
                     old_out = os.path.join(self.tmp_dir, f"old_{safe_name}_{layer_safe}.{ext}")
                     
-                    for old_temp in glob.glob(curr_out.replace(".svg", "*.svg")) + glob.glob(old_out.replace(".svg", "*.svg")):
-                        try:
-                            if os.path.isdir(old_temp): shutil.rmtree(old_temp)
-                            else: os.remove(old_temp)
-                        except: pass
-
                     cli_args = [self.kicad_cli, "pcb" if is_pcb else "sch", "export", ext]
                     if is_pcb:
                         active_layers = layer
@@ -280,23 +315,54 @@ class DiffEngine:
                         cli_args.extend(["--exclude-drawing-sheet"])
                     
                     if status_text != "Deleted":
-                        subprocess.run(cli_args + [file_path, "--output", curr_out], 
-                                       capture_output=True, cwd=self.project_dir, creationflags=CREATE_NO_WINDOW)
-                        if not is_pcb:
-                            curr_out = self._find_correct_svg(curr_out, base_name)
+                        tasks.append({'type': 'svg', 'layer': layer, 'version': 'curr', 'cli_args': cli_args, 'file_path': file_path, 'out_path': curr_out, 'is_pcb': is_pcb, 'base_name': base_name})
 
                     if has_old:
-                        subprocess.run(cli_args + [old_board_tmp, "--output", old_out], 
-                                       capture_output=True, cwd=self.project_dir, creationflags=CREATE_NO_WINDOW)
-                        if not is_pcb:
-                            old_out = self._find_correct_svg(old_out, old_base_name)
-                    
-                    visuals[layer] = {
-                        "curr": curr_out if os.path.exists(curr_out) and os.path.getsize(curr_out) > 0 and not os.path.isdir(curr_out) else None,
-                        "old": old_out if os.path.exists(old_out) and os.path.getsize(old_out) > 0 and not os.path.isdir(old_out) else None
-                    }
+                        tasks.append({'type': 'svg', 'layer': layer, 'version': 'old', 'cli_args': cli_args, 'file_path': old_board_tmp, 'out_path': old_out, 'is_pcb': is_pcb, 'base_name': old_base_name})
 
-                # 3. Handle Logical Diffs (PCB and SCH)
+                # Netlist Tasks
+                curr_net = None
+                old_net = None
+                if not is_pcb:
+                    if status_text != "Deleted":
+                        curr_net = os.path.join(self.tmp_dir, f"curr_{safe_name}.net")
+                        tasks.append({'type': 'netlist', 'version': 'curr', 'cli_args': [self.kicad_cli, "sch", "export", "netlist", file_path, "--output", curr_net], 'out_path': curr_net})
+                    if has_old:
+                        old_net = os.path.join(self.tmp_dir, f"old_{safe_name}.net")
+                        tasks.append({'type': 'netlist', 'version': 'old', 'cli_args': [self.kicad_cli, "sch", "export", "netlist", old_board_tmp, "--output", old_net], 'out_path': old_net})
+
+                # DRC Tasks
+                if run_drc:
+                    if status_text != "Deleted":
+                        tasks.append({'type': 'drc', 'version': 'curr', 'file_path': file_path, 'is_pcb': is_pcb})
+                    if has_old:
+                        tasks.append({'type': 'drc', 'version': 'old', 'file_path': old_board_tmp, 'is_pcb': is_pcb})
+
+                # ==============================================================
+                # 3. Execute all Heavy CLI tasks simultaneously via ThreadPool
+                # ==============================================================
+                curr_health, old_health = [], []
+                
+                # Cap threads to prevent RAM spikes on large boards (max 12 threads = ~1.5GB RAM usage)
+                max_workers = min(12, (os.cpu_count() or 4))
+                
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    futures = [executor.submit(self._run_cmd_task, t) for t in tasks]
+                    for future in as_completed(futures):
+                        res = future.result()
+                        if not res: continue
+                        
+                        if res['type'] == 'svg':
+                            visuals[res['layer']][res['version']] = res['result']
+                        elif res['type'] == 'drc':
+                            if res['version'] == 'curr':
+                                curr_health = res['result'] or []
+                            else:
+                                old_health = res['result'] or []
+
+                # ==============================================================
+                # 4. Handle Logical Extraction
+                # ==============================================================
                 if is_pcb:
                     dims_data["curr"] = get_pcb_dimensions(file_path)
 
@@ -312,30 +378,22 @@ class DiffEngine:
                         pcb_logic_diff = compare_logic_data(old_comp, curr_comp)
 
                 if not is_pcb:
-                    curr_net = os.path.join(self.tmp_dir, f"curr_{safe_name}.net")
                     if status_text != "Deleted":
-                        subprocess.run([self.kicad_cli, "sch", "export", "netlist", file_path, "--output", curr_net], capture_output=True, cwd=self.project_dir, creationflags=CREATE_NO_WINDOW)
                         bom_data["curr"] = get_bom_data(file_path)
                     
                     if has_old:
-                        old_net = os.path.join(self.tmp_dir, f"old_{safe_name}.net")
-                        subprocess.run([self.kicad_cli, "sch", "export", "netlist", old_board_tmp, "--output", old_net], capture_output=True, cwd=self.project_dir, creationflags=CREATE_NO_WINDOW)
-                        
-                        netlist_diff = self._generate_text_diff(old_net, curr_net)
                         bom_data["old"] = get_bom_data(old_board_tmp)
+                        if curr_net and old_net:
+                            netlist_diff = self._generate_text_diff(old_net, curr_net)
 
-                # 4. Extract TODOs
+                # Extract TODOs
                 curr_todos = extract_todos(file_path) if status_text != "Deleted" else []
                 old_todos = extract_todos(old_board_tmp) if has_old else []
                 
-                # 5. Extract Health (DRC/ERC)
+                # Format DRC Diffs
                 if run_drc:
-                    curr_health = self._run_rule_check(file_path, is_pcb) if status_text != "Deleted" else []
-                    old_health = self._run_rule_check(old_board_tmp, is_pcb) if has_old else []
-                    
                     old_set = set(old_health)
                     curr_set = set(curr_health)
-                    
                     health_data = {
                         "resolved": sorted(list(old_set - curr_set)),
                         "new": sorted(list(curr_set - old_set)),
