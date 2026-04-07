@@ -76,6 +76,7 @@ class CommandCenterDialog(wx.Dialog):
         
         btn_diff = wx.Button(self.scroll_panel, label="View Local Changes (Visual Diff)", size=(-1, 40))
         btn_diff.SetBackgroundColour(wx.Colour(220, 240, 255)) # Light Blue (Primary)
+        btn_diff.SetForegroundColour(wx.Colour(0, 0, 0)) # Force black text for dark mode compatibility
         btn_diff.Bind(wx.EVT_BUTTON, self.on_diff)
         
         btn_diff_all = wx.Button(self.scroll_panel, label="View All Files (Including Unchanged)", size=(-1, 40))
@@ -117,6 +118,7 @@ class CommandCenterDialog(wx.Dialog):
         # --- JLCPCB Constraints Enforcer ---
         btn_jlc_rules = wx.Button(self.scroll_panel, label="Set JLCPCB Safe Constraints (Free Tier)", size=(-1, 40))
         btn_jlc_rules.SetBackgroundColour(wx.Colour(230, 230, 250)) # Light Lavender to separate design features
+        btn_jlc_rules.SetForegroundColour(wx.Colour(0, 0, 0)) # Force black text
         btn_jlc_rules.Bind(wx.EVT_BUTTON, self.on_set_jlc_constraints)
         sizer_local.Add(btn_jlc_rules, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=5)
 
@@ -142,6 +144,7 @@ class CommandCenterDialog(wx.Dialog):
         
         btn_sync = wx.Button(self.scroll_panel, label="Download from Server (Force Sync)", size=(-1, 40))
         btn_sync.SetBackgroundColour(wx.Colour(255, 200, 200)) # Light Red (Destructive local)
+        btn_sync.SetForegroundColour(wx.Colour(0, 0, 0)) # Force black text
         btn_sync.Bind(wx.EVT_BUTTON, self.on_force_sync)
 
         sizer_remote.Add(self.btn_push, flag=wx.EXPAND | wx.ALL, border=5)
@@ -248,6 +251,7 @@ class CommandCenterDialog(wx.Dialog):
         
         btn_setup = wx.Button(self.scroll_panel, label="Initialize and Link to Remote")
         btn_setup.SetBackgroundColour(wx.Colour(200, 255, 200))
+        btn_setup.SetForegroundColour(wx.Colour(0, 0, 0)) # Force black text
         btn_setup.Bind(wx.EVT_BUTTON, self.on_setup_repo)
         
         self.setup_section_container.Add(btn_setup, flag=wx.EXPAND | wx.ALL, border=5)
@@ -271,6 +275,8 @@ class CommandCenterDialog(wx.Dialog):
             if hasattr(self, 'btn_commit'):
                 self.btn_commit.SetBackgroundColour(wx.Colour(240, 240, 240))
                 self.btn_push.SetBackgroundColour(wx.Colour(240, 240, 240))
+                self.btn_commit.SetForegroundColour(wx.Colour(0, 0, 0))
+                self.btn_push.SetForegroundColour(wx.Colour(0, 0, 0))
             return
         try:
             res_curr = subprocess.run([self.git_cmd, "-C", self.project_dir, "branch", "--show-current"], 
@@ -302,6 +308,8 @@ class CommandCenterDialog(wx.Dialog):
                 else:
                     self.btn_commit.SetBackgroundColour(wx.Colour(230, 245, 230))
                     commit_font.SetWeight(wx.FONTWEIGHT_NORMAL)
+                
+                self.btn_commit.SetForegroundColour(wx.Colour(0, 0, 0)) # Ensure black text 
                 self.btn_commit.SetFont(commit_font)
 
                 push_font = self.btn_push.GetFont()
@@ -318,6 +326,8 @@ class CommandCenterDialog(wx.Dialog):
                 else:
                     self.btn_push.SetBackgroundColour(wx.Colour(255, 240, 220))
                     push_font.SetWeight(wx.FONTWEIGHT_NORMAL)
+                
+                self.btn_push.SetForegroundColour(wx.Colour(0, 0, 0)) # Ensure black text
                 self.btn_push.SetFont(push_font)
                 
                 self.btn_commit.Refresh()
