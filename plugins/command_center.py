@@ -15,7 +15,7 @@ from .jlcpcb_rules import set_jlcpcb_constraints
 
 class CommandCenterDialog(wx.Dialog):
     def __init__(self, parent, project_dir):
-        super().__init__(parent, title="GitHub Command Center", style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER)
+        super().__init__(parent, title="Git Command Center", style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER)
         self.project_dir = project_dir
         self.git_cmd = "git.exe" if os.name == "nt" else "git"
         self.engine = DiffEngine(self.project_dir)
@@ -134,18 +134,18 @@ class CommandCenterDialog(wx.Dialog):
         box_remote = wx.StaticBox(self.scroll_panel, label="Remote and Sync")
         sizer_remote = wx.StaticBoxSizer(box_remote, wx.VERTICAL)
 
-        self.btn_push = wx.Button(self.scroll_panel, label="Push Changes to GitHub", size=(-1, 40))
+        self.btn_push = wx.Button(self.scroll_panel, label="Push Changes to Remote", size=(-1, 40))
         self.btn_push.Bind(wx.EVT_BUTTON, self.on_push)
         
-        btn_github = wx.Button(self.scroll_panel, label="Open GitHub Page", size=(-1, 40))
-        btn_github.Bind(wx.EVT_BUTTON, self.on_open_github)
+        btn_remote = wx.Button(self.scroll_panel, label="Open Remote Web Page", size=(-1, 40))
+        btn_remote.Bind(wx.EVT_BUTTON, self.on_open_remote)
         
         btn_sync = wx.Button(self.scroll_panel, label="Download from Server (Force Sync)", size=(-1, 40))
         btn_sync.SetBackgroundColour(wx.Colour(255, 200, 200)) # Light Red (Destructive local)
         btn_sync.Bind(wx.EVT_BUTTON, self.on_force_sync)
 
         sizer_remote.Add(self.btn_push, flag=wx.EXPAND | wx.ALL, border=5)
-        sizer_remote.Add(btn_github, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=5)
+        sizer_remote.Add(btn_remote, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=5)
         sizer_remote.Add(btn_sync, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=5)
         self.scroll_vbox.Add(sizer_remote, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=10)
 
@@ -246,7 +246,7 @@ class CommandCenterDialog(wx.Dialog):
         setup_box = wx.StaticBox(self.scroll_panel, label="New Project Setup")
         self.setup_section_container = wx.StaticBoxSizer(setup_box, wx.VERTICAL)
         
-        btn_setup = wx.Button(self.scroll_panel, label="Initialize and Link to GitHub")
+        btn_setup = wx.Button(self.scroll_panel, label="Initialize and Link to Remote")
         btn_setup.SetBackgroundColour(wx.Colour(200, 255, 200))
         btn_setup.Bind(wx.EVT_BUTTON, self.on_setup_repo)
         
@@ -332,13 +332,22 @@ class CommandCenterDialog(wx.Dialog):
             content = (
                 "# KiCad modern backups (KiCad 7+)\n"
                 "*-backups/\n\n"
-                ".lck\n"
+                "# KiCad lock files\n"
+                "*.lck\n"
+                "~*.lck\n\n"
                 "# KiCad legacy backups and autosaves\n"
                 "*.bak\n*.kicad_pcb-bak\n*.kicad_sch-bak\n*.kicad_pro-bak\n"
                 "*-save.pro\n*-save.kicad_pcb\n*-save.kicad_sch\n"
                 "*_autosave-*\n_autosave-*\n\n"
-                "# KiCad caches\nfp-info-cache\n\n"
-                "# Generated files\n*.bck\n*.kicad_pcb-shl\npython_environment/\n\n"
+                "# KiCad caches\n"
+                "fp-info-cache\n\n"
+                "# Plugin Temporary Files\n"
+                "tmp_git_old_*\n\n"
+                "# IDE & History Folders\n"
+                ".history/\n"
+                ".history_trim/\n\n"
+                "# Generated files\n"
+                "*.bck\n*.kicad_pcb-shl\npython_environment/\n\n"
                 "# OS files\n.DS_Store\nThumbs.db\n"
             )
             with open(gitignore_path, "w") as f:
@@ -346,8 +355,8 @@ class CommandCenterDialog(wx.Dialog):
 
     def on_setup_repo(self, event):
         dlg = wx.TextEntryDialog(self, 
-            "Paste your GitHub Repository URL:", 
-            "Link to GitHub")
+            "Paste your Git Repository URL (GitHub, GitLab, etc. (for local repositories, just press Save Snapshot/Quick Commit)):",
+            "Link to Remote")
         
         if dlg.ShowModal() == wx.ID_OK:
             url = dlg.GetValue().strip()
@@ -373,7 +382,7 @@ class CommandCenterDialog(wx.Dialog):
                 if res_rem.returncode != 0:
                     subprocess.run([self.git_cmd, "-C", self.project_dir, "remote", "set-url", "origin", url], creationflags=CREATE_NO_WINDOW)
 
-                wx.MessageBox("Project linked to GitHub successfully!", "Success")
+                wx.MessageBox("Project linked to remote successfully!", "Success")
                 
                 if self.setup_section_container:
                     for item in self.setup_section_container.GetChildren():
@@ -658,7 +667,7 @@ class CommandCenterDialog(wx.Dialog):
             
         # Disable the button so the user doesn't click it twice
         self.btn_push.Disable()
-        self.status_lbl.SetLabel("Status: Pushing to GitHub (Please wait)...")
+        self.status_lbl.SetLabel("Status: Pushing to Remote (Please wait)...")
         wx.BeginBusyCursor()
         
         # Fire and forget the background thread
@@ -695,7 +704,7 @@ class CommandCenterDialog(wx.Dialog):
             
             if res.returncode == 0:
                 success = True
-                message = f"Successfully pushed branch '{branch}' to GitHub."
+                message = f"Successfully pushed branch '{branch}' to Remote."
             else:
                 success = False
                 message = f"Push Failed:\n{res.stderr.strip()}"
@@ -721,7 +730,7 @@ class CommandCenterDialog(wx.Dialog):
             
         self.update_git_status()
 
-    def on_open_github(self, event):
+    def on_open_remote(self, event):
         if not os.path.isdir(os.path.join(self.project_dir, ".git")):
             wx.MessageBox("No Git repo found. Please initialize and link first.", "Error")
             return
@@ -731,16 +740,23 @@ class CommandCenterDialog(wx.Dialog):
                                  capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
             if res.returncode == 0:
                 url = res.stdout.strip()
-                if url.startswith("git@github.com:"):
-                    url = url.replace("git@github.com:", "https://github.com/")
+                
+                # Format common Git SSH URLs to HTTPS so they open correctly in a web browser
+                if url.startswith("git@"):
+                    # git@gitlab.com:user/repo.git -> https://gitlab.com/user/repo.git
+                    url = "https://" + url[4:].replace(":", "/")
+                elif url.startswith("ssh://git@"):
+                    # ssh://git@bitbucket.org/user/repo.git -> https://bitbucket.org/user/repo.git
+                    url = "https://" + url[10:]
+                    
                 if url.endswith(".git"):
                     url = url[:-4]
                     
                 webbrowser.open(url)
             else:
-                wx.MessageBox("No remote 'origin' found. Have you linked your project to GitHub?", "Error")
+                wx.MessageBox("No remote 'origin' found. Have you linked your project to a remote server?", "Error")
         except Exception as e:
-            wx.MessageBox(f"Failed to open GitHub: {e}", "Error")
+            wx.MessageBox(f"Failed to open remote URL: {e}", "Error")
 
     def on_close(self, event):
         self.Destroy()
