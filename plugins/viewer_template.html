@@ -420,9 +420,12 @@
             URL.revokeObjectURL(url);
         }
 
-        function resolveUrl(vObj, currObj) {
+        function resolveUrl(vObj, currObj, _depth = 0) {
             if (!vObj || !vObj.data) return "";
-            if (vObj.data === "SAME_AS_CURR") return resolveUrl(currObj, null);
+            if (vObj.data === "SAME_AS_CURR") {
+                if (_depth > 0) return ""; // prevent infinite recursion on circular SAME_AS_CURR
+                return resolveUrl(currObj, null, _depth + 1);
+            }
             if (vObj.urlCache) return vObj.urlCache;
 
             if (vObj.is_svg) {
@@ -442,6 +445,9 @@
         let initialPointX = 0;
         let initialPointY = 0;
         let pinchCenter = {x: 0, y: 0};
+        let wheelPending = false;
+        // Cached reference for the swipe clipping target (avoids repeated getElementById in high-freq events)
+        const wrapperNew = document.getElementById('viewer-wrapper-new');
 
         function setTransform() {
             const tf = 'translate(' + pointX + 'px, ' + pointY + 'px) scale(' + scale + ')';
@@ -477,7 +483,7 @@
                 swipePos = ((e.clientX - rect.left) / rect.width) * 100;
                 swipePos = Math.max(0, Math.min(100, swipePos));
                 sliderHandle.style.left = swipePos + '%';
-                document.getElementById('viewer-wrapper-new').style.clipPath = `polygon(0 0, ${swipePos}% 0, ${swipePos}% 100%, 0 100%)`;
+                wrapperNew.style.clipPath = `polygon(0 0, ${swipePos}% 0, ${swipePos}% 100%, 0 100%)`;
                 return;
             }
             if (!panning || currentTab !== 'visual') return;
@@ -488,17 +494,23 @@
         };
 
         viewerContainer.onwheel = function (e) {
-            if (currentTab !== 'visual') return; 
+            if (currentTab !== 'visual') return;
             e.preventDefault();
-            let xs = (e.clientX - pointX) / scale;
-            let ys = (e.clientY - pointY) / scale;
-            let delta = (e.wheelDelta ? e.wheelDelta : -e.deltaY);
-            (delta > 0) ? (scale *= 1.2) : (scale /= 1.2);
-            if (scale < 0.1) scale = 0.1;
-            if (scale > 50) scale = 50;
-            pointX = e.clientX - xs * scale;
-            pointY = e.clientY - ys * scale;
-            setTransform();
+            if (wheelPending) return;
+            wheelPending = true;
+            const cx = e.clientX, cy = e.clientY;
+            const delta = (e.wheelDelta ? e.wheelDelta : -e.deltaY);
+            requestAnimationFrame(() => {
+                let xs = (cx - pointX) / scale;
+                let ys = (cy - pointY) / scale;
+                (delta > 0) ? (scale *= 1.2) : (scale /= 1.2);
+                if (scale < 0.1) scale = 0.1;
+                if (scale > 50) scale = 50;
+                pointX = cx - xs * scale;
+                pointY = cy - ys * scale;
+                setTransform();
+                wheelPending = false;
+            });
         };
 
         sliderHandle.addEventListener('touchstart', (e) => { draggingSlider = true; e.stopPropagation(); }, {passive: false});
@@ -534,7 +546,7 @@
                 swipePos = ((e.touches[0].clientX - rect.left) / rect.width) * 100;
                 swipePos = Math.max(0, Math.min(100, swipePos));
                 sliderHandle.style.left = swipePos + '%';
-                document.getElementById('viewer-wrapper-new').style.clipPath = `polygon(0 0, ${swipePos}% 0, ${swipePos}% 100%, 0 100%)`;
+                wrapperNew.style.clipPath = `polygon(0 0, ${swipePos}% 0, ${swipePos}% 100%, 0 100%)`;
                 return;
             }
 
@@ -610,33 +622,31 @@
                 return `<div class="no-data-msg" style="padding: 20px;">No components found (or all have 'Exclude from board' enabled).</div>`;
             }
 
-            let html = `<div class="bom-table-wrapper"><table class="bom-table">
-                <thead><tr><th style="width:120px;">Status</th><th>Qty</th><th>References</th><th>Value</th><th>Footprint</th><th>MPN</th><th>Description</th></tr></thead>
-                <tbody>`;
-                
+            const rows = [];
             for (const sig of sortedSigs) {
                 const o = oldGroups[sig];
                 const c = currGroups[sig];
-                
+
                 if (c && !o) {
-                    html += `<tr class="bom-row-add"><td>➕ New Part</td><td>${c.qty}</td><td>${c.refs.sort().join(', ')}</td><td>${escapeHtml(c.val)}</td><td>${escapeHtml(c.fp)}</td><td>${escapeHtml(c.mpn)}</td><td>${escapeHtml(c.desc)}</td></tr>`;
+                    rows.push(`<tr class="bom-row-add"><td>➕ New Part</td><td>${c.qty}</td><td>${c.refs.sort().join(', ')}</td><td>${escapeHtml(c.val)}</td><td>${escapeHtml(c.fp)}</td><td>${escapeHtml(c.mpn)}</td><td>${escapeHtml(c.desc)}</td></tr>`);
                 } else if (o && !c) {
-                    html += `<tr class="bom-row-del"><td>➖ Removed</td><td><del>${o.qty}</del> 0</td><td><del>${o.refs.sort().join(', ')}</del></td><td>${escapeHtml(o.val)}</td><td>${escapeHtml(o.fp)}</td><td>${escapeHtml(o.mpn)}</td><td>${escapeHtml(o.desc)}</td></tr>`;
+                    rows.push(`<tr class="bom-row-del"><td>➖ Removed</td><td><del>${o.qty}</del> 0</td><td><del>${o.refs.sort().join(', ')}</del></td><td>${escapeHtml(o.val)}</td><td>${escapeHtml(o.fp)}</td><td>${escapeHtml(o.mpn)}</td><td>${escapeHtml(o.desc)}</td></tr>`);
                 } else {
                     const cRefsStr = c.refs.sort().join(', ');
                     const oRefsStr = o.refs.sort().join(', ');
-                    
+
                     if (c.qty !== o.qty || cRefsStr !== oRefsStr) {
                         let qtyHtml = c.qty !== o.qty ? `<del>${o.qty}</del> <b>${c.qty}</b>` : c.qty;
                         let refHtml = cRefsStr !== oRefsStr ? `<div class="color-err" style="font-size: 0.85em; text-decoration: line-through;">${oRefsStr}</div><div class="color-new">${cRefsStr}</div>` : cRefsStr;
-                        html += `<tr class="bom-row-mod"><td>📝 Changed</td><td>${qtyHtml}</td><td>${refHtml}</td><td>${escapeHtml(c.val)}</td><td>${escapeHtml(c.fp)}</td><td>${escapeHtml(c.mpn)}</td><td>${escapeHtml(c.desc)}</td></tr>`;
+                        rows.push(`<tr class="bom-row-mod"><td>📝 Changed</td><td>${qtyHtml}</td><td>${refHtml}</td><td>${escapeHtml(c.val)}</td><td>${escapeHtml(c.fp)}</td><td>${escapeHtml(c.mpn)}</td><td>${escapeHtml(c.desc)}</td></tr>`);
                     } else {
-                        html += `<tr><td>✓ Unchanged</td><td>${c.qty}</td><td>${cRefsStr}</td><td>${escapeHtml(c.val)}</td><td>${escapeHtml(c.fp)}</td><td>${escapeHtml(c.mpn)}</td><td>${escapeHtml(c.desc)}</td></tr>`;
+                        rows.push(`<tr><td>✓ Unchanged</td><td>${c.qty}</td><td>${cRefsStr}</td><td>${escapeHtml(c.val)}</td><td>${escapeHtml(c.fp)}</td><td>${escapeHtml(c.mpn)}</td><td>${escapeHtml(c.desc)}</td></tr>`);
                     }
                 }
             }
-            html += `</tbody></table></div>`;
-            return html;
+            return `<div class="bom-table-wrapper"><table class="bom-table">
+                <thead><tr><th style="width:120px;">Status</th><th>Qty</th><th>References</th><th>Value</th><th>Footprint</th><th>MPN</th><th>Description</th></tr></thead>
+                <tbody>${rows.join('')}</tbody></table></div>`;
         }
 
         function init() {
@@ -656,7 +666,7 @@
 
                 li.innerHTML = `
                     <div class="file-name">${escapeHtml(file.name)}</div>
-                    <div class="file-status" style="color: ${colorClass};">${file.status}</div>
+                    <div class="file-status" style="color: ${colorClass};">${escapeHtml(file.status)}</div>
                 `;
                 fileListEl.appendChild(li);
             });
@@ -732,7 +742,7 @@
 
         function setupPane(prefix, layer) {
             const file = diffData[activeIndex];
-            const visual = file.visuals[layer] || {};
+            const visual = (file.visuals && file.visuals[layer]) || {};
             const currUrl = resolveUrl(visual.curr, null);
             const oldUrl = resolveUrl(visual.old, visual.curr);
             
@@ -925,8 +935,8 @@
                 
                 const todos = file.todos || {curr: [], old: []};
                 let html = '<div class="todos-wrapper">';
-                html += '<div class="todos-column"><div class="todos-header color-old">' + targetName + ' TODOs</div><ul class="todo-list">';
-                if (!todos.old || todos.old.length === 0) html += '<li class="todo-empty">No TODOs found in ' + targetName + '.</li>';
+                html += '<div class="todos-column"><div class="todos-header color-old">' + escapeHtml(targetName) + ' TODOs</div><ul class="todo-list">';
+                if (!todos.old || todos.old.length === 0) html += '<li class="todo-empty">No TODOs found in ' + escapeHtml(targetName) + '.</li>';
                 else todos.old.forEach(t => html += `<li class="todo-item todo-old">${escapeHtml(t)}</li>`);
                 html += '</ul></div>';
 
@@ -996,7 +1006,7 @@
                 swipeLabels.classList.remove('hidden');
                 statusTextEl.innerHTML = 'Showing: <strong class="color-old">Overlay Mode</strong>';
             } else if (showOld && oldUrl) {
-                statusTextEl.innerHTML = 'Showing: <strong class="color-err">' + targetName + '</strong>';
+                statusTextEl.innerHTML = 'Showing: <strong class="color-err">' + escapeHtml(targetName) + '</strong>';
             } else {
                 if (currUrl && !oldUrl && file.status !== "Unchanged") noOldMsgEl.classList.remove('hidden');
                 statusTextEl.innerHTML = 'Showing: <strong class="color-new">Local Changes</strong>';
@@ -1042,7 +1052,7 @@
         }
 
         document.addEventListener('keydown', function(event) {
-            if(document.activeElement.tagName === 'SELECT' || document.activeElement.tagName === 'INPUT' && document.activeElement.type !== 'checkbox') return;
+            if((document.activeElement.tagName === 'SELECT' || document.activeElement.tagName === 'INPUT') && document.activeElement.type !== 'checkbox') return;
             if (event.code === 'Space') { event.preventDefault(); toggleDiff(); }
             else if (event.code === 'KeyO') { event.preventDefault(); toggleOverlay(); }
             else if (event.code === 'KeyW') { event.preventDefault(); toggleSwipe(); }

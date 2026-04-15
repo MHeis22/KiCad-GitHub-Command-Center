@@ -53,12 +53,12 @@ class ReadmeGenerator:
         
         if os.path.exists(out_json):
             try: os.remove(out_json)
-            except: pass
-            
+            except OSError: pass
+
         try:
             # Run DRC and dump to a temp JSON file
-            subprocess.run([kicad_cli, "pcb", "drc", "--format", "json", "--output", out_json, pcb_file], 
-                           capture_output=True, cwd=self.project_dir,
+            subprocess.run([kicad_cli, "pcb", "drc", "--format", "json", "--output", out_json, pcb_file],
+                           capture_output=True, timeout=120, cwd=self.project_dir,
                            creationflags=CREATE_NO_WINDOW)
             
             if os.path.exists(out_json):
@@ -86,7 +86,7 @@ class ReadmeGenerator:
         finally:
             if os.path.exists(out_json):
                 try: os.remove(out_json)
-                except: pass
+                except OSError: pass
                 
         return "❓ Unknown"
 

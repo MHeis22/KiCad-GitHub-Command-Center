@@ -27,7 +27,7 @@ class DiffEngine:
     def get_kicad_version(self):
         """Fetches the installed KiCad version via CLI."""
         try:
-            res = subprocess.run([self.kicad_cli, "--version"], capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
+            res = subprocess.run([self.kicad_cli, "--version"], capture_output=True, text=True, timeout=10, creationflags=CREATE_NO_WINDOW)
             version_str = res.stdout.strip()
             if version_str:
                 return version_str
@@ -40,8 +40,8 @@ class DiffEngine:
         status_dict = {}
         try:
             # 1. Compare working tree to the specific target commit/branch (will fail if HEAD missing on new repo)
-            res = subprocess.run([self.git_cmd, "-C", self.project_dir, "diff", target, "--name-status"], 
-                                 capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
+            res = subprocess.run([self.git_cmd, "-C", self.project_dir, "diff", target, "--name-status"],
+                                 capture_output=True, text=True, timeout=30, creationflags=CREATE_NO_WINDOW)
             for line in res.stdout.split('\n'):
                 if line.strip():
                     parts = line.split('\t')
@@ -51,8 +51,8 @@ class DiffEngine:
                         status_dict[fname] = code
 
             # 2. Catch untracked files and staged files that might be missed if HEAD doesn't exist
-            res_untracked = subprocess.run([self.git_cmd, "-C", self.project_dir, "status", "--porcelain"], 
-                                 capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
+            res_untracked = subprocess.run([self.git_cmd, "-C", self.project_dir, "status", "--porcelain"],
+                                 capture_output=True, text=True, timeout=30, creationflags=CREATE_NO_WINDOW)
             for line in res_untracked.stdout.split('\n'):
                 if len(line) > 2:
                     code = line[:2].strip()
@@ -68,16 +68,16 @@ class DiffEngine:
         targets = ["HEAD"]
         try:
             # 1. Fetch Local Branches
-            res = subprocess.run([self.git_cmd, "-C", self.project_dir, "branch", "--format=%(refname:short)"], 
-                                 capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
+            res = subprocess.run([self.git_cmd, "-C", self.project_dir, "branch", "--format=%(refname:short)"],
+                                 capture_output=True, text=True, timeout=10, creationflags=CREATE_NO_WINDOW)
             for line in res.stdout.split('\n'):
                 target = line.strip()
                 if target and target not in targets:
                     targets.append(target)
             
             # 2. Fetch Recent Commits
-            res = subprocess.run([self.git_cmd, "-C", self.project_dir, "log", "-n", "15", "--format=%h (%s)"], 
-                                 capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
+            res = subprocess.run([self.git_cmd, "-C", self.project_dir, "log", "-n", "15", "--format=%h (%s)"],
+                                 capture_output=True, text=True, timeout=10, creationflags=CREATE_NO_WINDOW)
             for line in res.stdout.split('\n'):
                 target = line.strip()
                 if target:
@@ -85,7 +85,7 @@ class DiffEngine:
                     if len(target) > 55:
                         target = target[:52] + "..."
                     targets.append(target)
-        except:
+        except Exception:
             pass
         return targets
 
@@ -123,11 +123,11 @@ class DiffEngine:
         
         if os.path.exists(out_json):
             try: os.remove(out_json)
-            except: pass
-            
+            except OSError: pass
+
         try:
             cmd = [self.kicad_cli, "pcb" if is_pcb else "sch", "drc" if is_pcb else "erc", "--format", "json", "--output", out_json, file_path]
-            subprocess.run(cmd, capture_output=True, cwd=self.project_dir, creationflags=CREATE_NO_WINDOW)
+            subprocess.run(cmd, capture_output=True, timeout=120, cwd=self.project_dir, creationflags=CREATE_NO_WINDOW)
             
             if os.path.exists(out_json):
                 with open(out_json, 'r', encoding='utf-8', errors='ignore') as f:
@@ -193,10 +193,10 @@ class DiffEngine:
                     try:
                         if os.path.isdir(old_temp): shutil.rmtree(old_temp)
                         else: os.remove(old_temp)
-                    except: pass
+                    except OSError: pass
 
-                subprocess.run(task['cli_args'] + [task['file_path'], "--output", out_path], 
-                               capture_output=True, cwd=self.project_dir, creationflags=CREATE_NO_WINDOW)
+                subprocess.run(task['cli_args'] + [task['file_path'], "--output", out_path],
+                               capture_output=True, timeout=120, cwd=self.project_dir, creationflags=CREATE_NO_WINDOW)
                 
                 if not task['is_pcb']:
                     out_path = self._find_correct_svg(out_path, task['base_name'])
@@ -207,7 +207,7 @@ class DiffEngine:
                     task['result'] = None
                     
             elif task['type'] == 'netlist':
-                subprocess.run(task['cli_args'], capture_output=True, cwd=self.project_dir, creationflags=CREATE_NO_WINDOW)
+                subprocess.run(task['cli_args'], capture_output=True, timeout=60, cwd=self.project_dir, creationflags=CREATE_NO_WINDOW)
                 task['result'] = task['out_path']
                 
             elif task['type'] == 'drc':
@@ -286,7 +286,7 @@ class DiffEngine:
                 if status_code != 'A' and status_code != '??':
                     with open(old_board_tmp, "wb") as f:
                         res = subprocess.run([self.git_cmd, "-C", self.project_dir, "show", f"{actual_target}:{fname}"],
-                                             stdout=f, stderr=subprocess.PIPE, creationflags=CREATE_NO_WINDOW)
+                                             stdout=f, stderr=subprocess.PIPE, timeout=30, creationflags=CREATE_NO_WINDOW)
                     if res.returncode == 0:
                         has_old = True
                         if pro_path:
@@ -420,10 +420,10 @@ class DiffEngine:
             finally:
                 if os.path.exists(old_board_tmp):
                     try: os.remove(old_board_tmp)
-                    except: pass
+                    except OSError: pass
                 if old_pro_tmp and os.path.exists(old_pro_tmp):
                     try: os.remove(old_pro_tmp)
-                    except: pass
+                    except OSError: pass
 
         summary = "\n".join(summary_lines) if summary_lines else "No files found."
         return diffs, summary
