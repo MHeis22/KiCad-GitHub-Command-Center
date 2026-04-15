@@ -156,7 +156,11 @@
 
         .status-indicator { font-size: 14px; color: var(--text-muted); min-width: 220px; text-align: right; }
         
-        #viewer-container { flex: 1; display: flex; justify-content: center; align-items: center; padding: 20px; overflow: hidden; position: relative; touch-action: none; }
+        #viewer-container { flex: 1; display: flex; justify-content: center; align-items: center; overflow: hidden; position: relative; touch-action: none; background: var(--bg-main); }
+        #viewer-container.split-active { flex-direction: row; }
+        
+        .viewer-pane { flex: 1; position: relative; height: 100%; width: 100%; overflow: hidden; display: flex; justify-content: center; align-items: center; }
+        #pane-right { border-left: 2px solid var(--border-color); }
         
         .viewer-absolute { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; justify-content: center; align-items: center; pointer-events: none; }
         .img-transform-wrapper { width: 100%; height: 100%; display: flex; justify-content: center; align-items: center; transform-origin: 0 0; position: absolute; }
@@ -165,6 +169,10 @@
         .pdf-viewer { position: absolute; width: calc(100% - 40px); height: calc(100% - 40px); pointer-events: auto; }
         
         img.board-viewer { position: absolute; width: 100%; height: 100%; object-fit: contain; pointer-events: none; filter: contrast(1.15) saturate(1.2); } 
+        
+        /* X-Axis Flip Utility */
+        .board-viewer.flipped { transform: scaleX(-1) !important; }
+        
         .hidden { display: none !important; }
         
         #swipe-slider-handle { position: absolute; top: 0; bottom: 0; left: 50%; width: 2px; background: #00bcd4; cursor: ew-resize; z-index: 100; touch-action: none; }
@@ -198,7 +206,7 @@
         .todo-list { list-style: none; padding: 15px; margin: 0; overflow-y: auto; flex: 1; }
         .todo-item { padding: 12px 15px; margin-bottom: 10px; border-radius: 4px; background: var(--bg-header); border-left: 4px solid var(--text-muted); font-family: 'Segoe UI', sans-serif; box-shadow: 0 2px 4px rgba(0,0,0,0.2); transition: 0.3s; word-wrap: break-word; white-space: normal; }
         .todo-empty { color: var(--text-muted); font-style: italic; padding: 10px 0; }
-        .no-data-msg { color: var(--text-muted); font-style: italic; font-size: 1.2em; }
+        .no-data-msg { color: var(--text-muted); font-style: italic; font-size: 1.2em; position: absolute; z-index: 100; text-align: center; }
 
         @media (max-width: 768px) {
             body { display: block; height: auto; overflow-y: auto; }
@@ -215,7 +223,7 @@
             button { padding: 10px; flex: 1 1 auto; }
             .todos-wrapper { flex-direction: column; height: auto; }
             .todos-column { min-height: 250px; }
-            #viewer-container { padding: 10px; height: 75vh; min-height: 450px; flex: none; }
+            #viewer-container { height: 75vh; min-height: 450px; flex: none; }
             #text-diff-container, #todos-container, #health-container, #bom-container { min-height: 60vh; flex: none; }
             .layer-selector { flex: 1 1 auto; justify-content: space-between; }
         }
@@ -241,13 +249,19 @@
                     <button class="btn-secondary" onclick="toggleColorblind()" title="Shortcut: C" id="btn-colorblind">Colorblind</button>
                     <button class="btn-secondary" onclick="saveReport()">Save Report</button>
                     
+                    <label id="flip-toggle-cont" class="checkbox-label hidden" title="Flip Board X-Axis (Hotkey: F)">
+                        <input type="checkbox" id="flip-checkbox" onchange="toggleFlip(this.checked)"> Flip (F)
+                    </label>
+
                     <label id="silk-toggle-cont" class="checkbox-label hidden">
                         <input type="checkbox" id="silk-checkbox" onchange="toggleSilk(this.checked)" checked> Show Silk
                     </label>
 
                     <div id="layer-container" class="layer-selector hidden">
-                        <span>Layer:</span>
-                        <select id="layer-dropdown" onchange="changeLayer(this.value)"></select>
+                        <span>L:</span>
+                        <select id="layer-dropdown" onchange="changeLayer(this.value, 'left')"></select>
+                        <span id="right-layer-label" class="hidden" style="margin-left: 5px;">R:</span>
+                        <select id="layer-dropdown-right" class="hidden" onchange="changeLayer(this.value, 'right')"></select>
                     </div>
 
                     <div id="dim-container" class="layer-selector hidden" style="color: var(--text-main); font-weight: bold; font-family: monospace;"></div>
@@ -264,6 +278,7 @@
                 
                 <div class="controls">
                     <div class="status-indicator" id="status-text">Decompressing data...</div>
+                    <button onclick="toggleSplit()" id="btn-toggle-split" class="hidden btn-secondary">Split View</button>
                     <button onclick="toggleSwipe()" id="btn-toggle-swipe" class="hidden btn-secondary">Swipe</button>
                     <button onclick="toggleOverlay()" id="btn-toggle-overlay" class="hidden btn-secondary">Overlay</button>
                     <button onclick="toggleDiff()" id="btn-toggle-diff" class="hidden">Toggle (Space)</button>
@@ -282,22 +297,44 @@
                 <div class="swipe-label label-old">Old (Target)</div>
             </div>
 
-            <div id="viewer-wrapper-old" class="viewer-absolute hidden">
-                <div id="img-wrapper-old" class="img-transform-wrapper hidden">
-                    <img id="old-img" class="board-viewer hidden" src="" />
-                    <img id="old-silk-img" class="board-viewer silk-overlay hidden" src="" />
+            <!-- Left / Main Pane -->
+            <div id="pane" class="viewer-pane hidden">
+                <div id="viewer-wrapper-old" class="viewer-absolute hidden">
+                    <div id="img-wrapper-old" class="img-transform-wrapper hidden">
+                        <img id="old-img" class="board-viewer hidden" src="" />
+                        <img id="old-silk-img" class="board-viewer silk-overlay hidden" src="" />
+                    </div>
+                    <iframe id="old-pdf" class="board-viewer pdf-viewer hidden" src=""></iframe>
+                    <iframe id="old-silk-pdf" class="board-viewer pdf-viewer silk-overlay hidden" src=""></iframe>
                 </div>
-                <iframe id="old-pdf" class="board-viewer pdf-viewer hidden" src=""></iframe>
-                <iframe id="old-silk-pdf" class="board-viewer pdf-viewer silk-overlay hidden" src=""></iframe>
+                <div id="viewer-wrapper-new" class="viewer-absolute hidden">
+                    <div id="img-wrapper-new" class="img-transform-wrapper hidden">
+                        <img id="new-img" class="board-viewer hidden" src="" />
+                        <img id="new-silk-img" class="board-viewer silk-overlay hidden" src="" />
+                    </div>
+                    <iframe id="new-pdf" class="board-viewer pdf-viewer hidden" src=""></iframe>
+                    <iframe id="new-silk-pdf" class="board-viewer pdf-viewer silk-overlay hidden" src=""></iframe>
+                </div>
             </div>
-
-            <div id="viewer-wrapper-new" class="viewer-absolute hidden">
-                <div id="img-wrapper-new" class="img-transform-wrapper hidden">
-                    <img id="new-img" class="board-viewer hidden" src="" />
-                    <img id="new-silk-img" class="board-viewer silk-overlay hidden" src="" />
+            
+            <!-- Right Pane (Split Mode Only) -->
+            <div id="pane-right" class="viewer-pane hidden">
+                <div id="viewer-wrapper-old-right" class="viewer-absolute hidden">
+                    <div id="img-wrapper-old-right" class="img-transform-wrapper hidden">
+                        <img id="old-img-right" class="board-viewer hidden" src="" />
+                        <img id="old-silk-img-right" class="board-viewer silk-overlay hidden" src="" />
+                    </div>
+                    <iframe id="old-pdf-right" class="board-viewer pdf-viewer hidden" src=""></iframe>
+                    <iframe id="old-silk-pdf-right" class="board-viewer pdf-viewer silk-overlay hidden" src=""></iframe>
                 </div>
-                <iframe id="new-pdf" class="board-viewer pdf-viewer hidden" src=""></iframe>
-                <iframe id="new-silk-pdf" class="board-viewer pdf-viewer silk-overlay hidden" src=""></iframe>
+                <div id="viewer-wrapper-new-right" class="viewer-absolute hidden">
+                    <div id="img-wrapper-new-right" class="img-transform-wrapper hidden">
+                        <img id="new-img-right" class="board-viewer hidden" src="" />
+                        <img id="new-silk-img-right" class="board-viewer silk-overlay hidden" src="" />
+                    </div>
+                    <iframe id="new-pdf-right" class="board-viewer pdf-viewer hidden" src=""></iframe>
+                    <iframe id="new-silk-pdf-right" class="board-viewer pdf-viewer silk-overlay hidden" src=""></iframe>
+                </div>
             </div>
             
             <div id="swipe-slider-handle" class="hidden"></div>
@@ -315,54 +352,49 @@
         let diffData = []; // Will be populated via DecompressionStream
         const targetName = "__TARGET_NAME__";
         let activeIndex = -1;
+        
         let showOld = false;
         let overlayMode = false;
         let swipeMode = false;
+        let splitMode = false;
+        let flipBoard = false;
         let swipePos = 50;
         
         let currentTab = 'visual'; 
         let currentLayer = 'Default';
+        let currentLayerRight = 'Default';
         let showSilk = true;
 
         const fileListEl = document.getElementById('file-list');
-        const wrapperOld = document.getElementById('viewer-wrapper-old');
-        const wrapperNew = document.getElementById('viewer-wrapper-new');
-        const imgWrapperOld = document.getElementById('img-wrapper-old');
-        const imgWrapperNew = document.getElementById('img-wrapper-new');
-        
-        const newImgEl = document.getElementById('new-img');
-        const oldImgEl = document.getElementById('old-img');
-        const newSilkImgEl = document.getElementById('new-silk-img');
-        const oldSilkImgEl = document.getElementById('old-silk-img');
-        const newPdfEl = document.getElementById('new-pdf');
-        const oldPdfEl = document.getElementById('old-pdf');
-        const newSilkPdfEl = document.getElementById('new-silk-pdf');
-        const oldSilkPdfEl = document.getElementById('old-silk-pdf');
-
         const sliderHandle = document.getElementById('swipe-slider-handle');
         const swipeLabels = document.getElementById('swipe-labels');
         const statusTextEl = document.getElementById('status-text');
         const noSelectionEl = document.getElementById('no-selection');
         const noOldMsgEl = document.getElementById('no-old-msg');
         const resetBtn = document.getElementById('reset-btn');
+        
         const layerCont = document.getElementById('layer-container');
         const layerDrop = document.getElementById('layer-dropdown');
+        const layerDropRight = document.getElementById('layer-dropdown-right');
         const dimContainer = document.getElementById('dim-container');
+        
         const silkToggleCont = document.getElementById('silk-toggle-cont');
         const silkCheckbox = document.getElementById('silk-checkbox');
+        const flipToggleCont = document.getElementById('flip-toggle-cont');
+        const flipCheckbox = document.getElementById('flip-checkbox');
         
         const viewerContainer = document.getElementById('viewer-container');
         const textDiffContainer = document.getElementById('text-diff-container');
         const bomContainer = document.getElementById('bom-container');
         const todosContainer = document.getElementById('todos-container');
         const healthContainer = document.getElementById('health-container');
-        const viewToggles = document.getElementById('view-toggles');
         
         const btnTheme = document.getElementById('btn-theme');
         const btnColorblind = document.getElementById('btn-colorblind');
         const btnToggleDiff = document.getElementById('btn-toggle-diff');
         const btnToggleOverlay = document.getElementById('btn-toggle-overlay');
         const btnToggleSwipe = document.getElementById('btn-toggle-swipe');
+        const btnToggleSplit = document.getElementById('btn-toggle-split');
 
         document.querySelectorAll('.target-name-val').forEach(el => el.innerText = targetName);
 
@@ -388,18 +420,16 @@
             URL.revokeObjectURL(url);
         }
 
-        // === URL CACHE GENERATOR FOR RAW DATA ===
         function resolveUrl(vObj, currObj) {
             if (!vObj || !vObj.data) return "";
             if (vObj.data === "SAME_AS_CURR") return resolveUrl(currObj, null);
             if (vObj.urlCache) return vObj.urlCache;
 
             if (vObj.is_svg) {
-                // Instantly generate a blob out of the raw text so we can treat it like an image url
                 const blob = new Blob([vObj.data], { type: 'image/svg+xml' });
                 vObj.urlCache = URL.createObjectURL(blob);
             } else {
-                vObj.urlCache = vObj.data; // It's already a Data URI (like PDF base64)
+                vObj.urlCache = vObj.data;
             }
             return vObj.urlCache;
         }
@@ -415,8 +445,13 @@
 
         function setTransform() {
             const tf = 'translate(' + pointX + 'px, ' + pointY + 'px) scale(' + scale + ')';
-            imgWrapperOld.style.transform = tf;
-            imgWrapperNew.style.transform = tf;
+            
+            // Apply transform to all potential panes to keep them perfectly synced in split view
+            const targets = ['img-wrapper-old', 'img-wrapper-new', 'img-wrapper-old-right', 'img-wrapper-new-right'];
+            targets.forEach(id => {
+                const el = document.getElementById(id);
+                if(el) el.style.transform = tf;
+            });
         }
 
         function resetTransform() {
@@ -428,7 +463,7 @@
         window.addEventListener('mouseup', () => { draggingSlider = false; panning = false; });
 
         viewerContainer.onmousedown = function (e) {
-            if (imgWrapperOld.classList.contains('hidden') && imgWrapperNew.classList.contains('hidden')) return; 
+            if (currentTab !== 'visual') return; 
             e.preventDefault();
             start = { x: e.clientX - pointX, y: e.clientY - pointY };
             panning = true;
@@ -437,15 +472,15 @@
         viewerContainer.onmouseleave = function (e) { panning = false; draggingSlider = false; };
 
         viewerContainer.onmousemove = function (e) {
-            if (draggingSlider && swipeMode) {
+            if (draggingSlider && swipeMode && !splitMode) {
                 const rect = viewerContainer.getBoundingClientRect();
                 swipePos = ((e.clientX - rect.left) / rect.width) * 100;
                 swipePos = Math.max(0, Math.min(100, swipePos));
                 sliderHandle.style.left = swipePos + '%';
-                wrapperNew.style.clipPath = `polygon(0 0, ${swipePos}% 0, ${swipePos}% 100%, 0 100%)`;
+                document.getElementById('viewer-wrapper-new').style.clipPath = `polygon(0 0, ${swipePos}% 0, ${swipePos}% 100%, 0 100%)`;
                 return;
             }
-            if (!panning || (imgWrapperOld.classList.contains('hidden') && imgWrapperNew.classList.contains('hidden'))) return;
+            if (!panning || currentTab !== 'visual') return;
             e.preventDefault();
             pointX = (e.clientX - start.x);
             pointY = (e.clientY - start.y);
@@ -453,7 +488,7 @@
         };
 
         viewerContainer.onwheel = function (e) {
-            if (imgWrapperOld.classList.contains('hidden') && imgWrapperNew.classList.contains('hidden')) return; 
+            if (currentTab !== 'visual') return; 
             e.preventDefault();
             let xs = (e.clientX - pointX) / scale;
             let ys = (e.clientY - pointY) / scale;
@@ -469,7 +504,7 @@
         sliderHandle.addEventListener('touchstart', (e) => { draggingSlider = true; e.stopPropagation(); }, {passive: false});
 
         viewerContainer.addEventListener('touchstart', function(e) {
-            if (imgWrapperOld.classList.contains('hidden') && imgWrapperNew.classList.contains('hidden')) return;
+            if (currentTab !== 'visual') return;
             if (e.touches.length === 1) {
                 start = { x: e.touches[0].clientX - pointX, y: e.touches[0].clientY - pointY };
                 panning = true;
@@ -491,15 +526,15 @@
         }, {passive: false});
 
         viewerContainer.addEventListener('touchmove', function(e) {
-            if (imgWrapperOld.classList.contains('hidden') && imgWrapperNew.classList.contains('hidden')) return;
+            if (currentTab !== 'visual') return;
             
-            if (draggingSlider && swipeMode && e.touches.length === 1) {
+            if (draggingSlider && swipeMode && !splitMode && e.touches.length === 1) {
                 e.preventDefault();
                 const rect = viewerContainer.getBoundingClientRect();
                 swipePos = ((e.touches[0].clientX - rect.left) / rect.width) * 100;
                 swipePos = Math.max(0, Math.min(100, swipePos));
                 sliderHandle.style.left = swipePos + '%';
-                wrapperNew.style.clipPath = `polygon(0 0, ${swipePos}% 0, ${swipePos}% 100%, 0 100%)`;
+                document.getElementById('viewer-wrapper-new').style.clipPath = `polygon(0 0, ${swipePos}% 0, ${swipePos}% 100%, 0 100%)`;
                 return;
             }
 
@@ -605,7 +640,6 @@
         }
 
         function init() {
-            // Set initial active highlights
             btnTheme.classList.toggle('btn-active', document.body.classList.contains('light-theme'));
             btnColorblind.classList.toggle('btn-active', document.body.classList.contains('colorblind-theme'));
 
@@ -634,26 +668,39 @@
         function selectFile(index) {
             activeIndex = index;
             const file = diffData[index];
-            showOld = false; overlayMode = false; swipeMode = false;
+            showOld = false; overlayMode = false; swipeMode = false; splitMode = false;
             
             layerDrop.innerHTML = '';
+            layerDropRight.innerHTML = '';
             const layers = Object.keys(file.visuals);
             layers.forEach(l => {
                 const opt = document.createElement('option');
                 opt.value = l; opt.innerText = l;
                 layerDrop.appendChild(opt);
+                
+                const optR = document.createElement('option');
+                optR.value = l; optR.innerText = l;
+                layerDropRight.appendChild(optR);
             });
 
             if (file.name.endsWith('.kicad_pcb')) {
                 currentLayer = layers.includes('F.Cu') ? 'F.Cu' : layers[0];
+                currentLayerRight = layers.includes('B.Cu') ? 'B.Cu' : (layers[1] || layers[0]);
                 layerCont.classList.remove('hidden');
                 silkToggleCont.classList.remove('hidden');
+                flipToggleCont.classList.remove('hidden');
             } else {
                 currentLayer = 'Default';
+                currentLayerRight = 'Default';
                 layerCont.classList.add('hidden');
                 silkToggleCont.classList.add('hidden');
+                flipToggleCont.classList.add('hidden');
             }
             layerDrop.value = currentLayer;
+            layerDropRight.value = currentLayerRight;
+            
+            flipBoard = false;
+            flipCheckbox.checked = false;
             
             switchTab('visual'); 
             resetTransform(); 
@@ -665,7 +712,12 @@
         }
 
         function toggleSilk(val) { showSilk = val; renderView(); }
-        function changeLayer(val) { currentLayer = val; renderView(); }
+        function toggleFlip(val) { flipBoard = val; renderView(); }
+        function changeLayer(val, side) { 
+            if (side === 'left') currentLayer = val;
+            if (side === 'right') currentLayerRight = val;
+            renderView(); 
+        }
 
         function switchTab(tab) {
             currentTab = tab;
@@ -678,24 +730,112 @@
             renderView();
         }
 
-        function renderView() {
-            if (activeIndex < 0) return;
+        function setupPane(prefix, layer) {
             const file = diffData[activeIndex];
-            const visual = file.visuals[currentLayer] || {};
-            
-            // Build temporary blob URLs for visual data out of raw JSON text strings
+            const visual = file.visuals[layer] || {};
             const currUrl = resolveUrl(visual.curr, null);
             const oldUrl = resolveUrl(visual.old, visual.curr);
             
             let silkLayer = null;
             if (showSilk) {
-                if (currentLayer.startsWith('F.')) silkLayer = 'F.Silkscreen';
-                else if (currentLayer.startsWith('B.')) silkLayer = 'B.Silkscreen';
+                if (layer.startsWith('F.')) silkLayer = 'F.Silkscreen';
+                else if (layer.startsWith('B.')) silkLayer = 'B.Silkscreen';
             }
             const silkVisual = silkLayer ? file.visuals[silkLayer] : null;
             const currSilkUrl = silkVisual ? resolveUrl(silkVisual.curr, null) : "";
             const oldSilkUrl = silkVisual ? resolveUrl(silkVisual.old, silkVisual.curr) : "";
+            const isSch = file.name.endsWith('.kicad_sch');
 
+            const wOld = document.getElementById('viewer-wrapper-old' + prefix);
+            const wNew = document.getElementById('viewer-wrapper-new' + prefix);
+            const imgWOld = document.getElementById('img-wrapper-old' + prefix);
+            const imgWNew = document.getElementById('img-wrapper-new' + prefix);
+            
+            const oldImgEl = document.getElementById('old-img' + prefix);
+            const newImgEl = document.getElementById('new-img' + prefix);
+            const oldSilkImgEl = document.getElementById('old-silk-img' + prefix);
+            const newSilkImgEl = document.getElementById('new-silk-img' + prefix);
+            const oldPdfEl = document.getElementById('old-pdf' + prefix);
+            const newPdfEl = document.getElementById('new-pdf' + prefix);
+            const oldSilkPdfEl = document.getElementById('old-silk-pdf' + prefix);
+            const newSilkPdfEl = document.getElementById('new-silk-pdf' + prefix);
+
+            // Reset
+            [oldImgEl, newImgEl, oldSilkImgEl, newSilkImgEl, oldPdfEl, newPdfEl, oldSilkPdfEl, newSilkPdfEl].forEach(e => {
+                if(e) {
+                    e.classList.add('hidden');
+                    if (flipBoard) e.classList.add('flipped'); else e.classList.remove('flipped');
+                }
+            });
+            
+            wNew.classList.remove('overlay-blend-mode', 'sch-overlay-mode');
+            oldImgEl.classList.remove('diff-old-tint', 'sch-diff-old');
+            newImgEl.classList.remove('diff-new-tint', 'sch-diff-new');
+            oldSilkImgEl.classList.remove('diff-old-tint', 'sch-diff-old');
+            newSilkImgEl.classList.remove('diff-new-tint', 'sch-diff-new');
+            
+            const paneContainer = document.getElementById(prefix === "" ? 'pane' : 'pane-right');
+            if(paneContainer) paneContainer.classList.remove('overlay-active', 'sch-diff-container');
+
+            if (isSch && !overlayMode) {
+                 newImgEl.style.backgroundColor = '#ffffff'; oldImgEl.style.backgroundColor = '#ffffff';
+                 newImgEl.style.filter = 'none'; oldImgEl.style.filter = 'none';
+            } else {
+                 newImgEl.style.backgroundColor = ''; oldImgEl.style.backgroundColor = '';
+                 newImgEl.style.filter = ''; oldImgEl.style.filter = '';
+            }
+            
+            imgWOld.classList.add('hidden'); imgWNew.classList.add('hidden');
+            wOld.classList.add('hidden'); wNew.classList.add('hidden');
+            wNew.style.clipPath = '';
+
+            const isPdf = (currUrl && currUrl.startsWith('data:application/pdf')) || (oldUrl && oldUrl.startsWith('data:application/pdf'));
+
+            if (isPdf) {
+                if (oldUrl) { oldPdfEl.src = oldUrl; oldPdfEl.classList.remove('hidden'); }
+                if (currUrl) { newPdfEl.src = currUrl; newPdfEl.classList.remove('hidden'); }
+                if (oldSilkUrl) { oldSilkPdfEl.src = oldSilkUrl; oldSilkPdfEl.classList.remove('hidden'); }
+                if (currSilkUrl) { newSilkPdfEl.src = currSilkUrl; newSilkPdfEl.classList.remove('hidden'); }
+            } else {
+                imgWOld.classList.remove('hidden'); imgWNew.classList.remove('hidden');
+                if (oldUrl) { oldImgEl.src = oldUrl; oldImgEl.classList.remove('hidden'); }
+                if (currUrl) { newImgEl.src = currUrl; newImgEl.classList.remove('hidden'); }
+                if (oldSilkUrl) { oldSilkImgEl.src = oldSilkUrl; oldSilkImgEl.classList.remove('hidden'); }
+                if (currSilkUrl) { newSilkImgEl.src = currSilkUrl; newSilkImgEl.classList.remove('hidden'); }
+            }
+
+            // Apply visual modes
+            if (swipeMode && !splitMode && oldUrl && currUrl) {
+                wOld.classList.remove('hidden'); wNew.classList.remove('hidden'); 
+                if(prefix === "") {
+                    wNew.style.clipPath = `polygon(0 0, ${swipePos}% 0, ${swipePos}% 100%, 0 100%)`; 
+                }
+            } else if (overlayMode && oldUrl && currUrl) {
+                wOld.classList.remove('hidden'); wNew.classList.remove('hidden'); 
+                if (isSch) {
+                    wNew.classList.add('sch-overlay-mode');
+                    oldImgEl.classList.add('sch-diff-old');
+                    newImgEl.classList.add('sch-diff-new');
+                    if(paneContainer) paneContainer.classList.add('sch-diff-container');
+                } else {
+                    if(paneContainer) paneContainer.classList.add('overlay-active');
+                    wNew.classList.add('overlay-blend-mode');
+                    oldImgEl.classList.add('diff-old-tint');
+                    newImgEl.classList.add('diff-new-tint');
+                    if (showSilk) { oldSilkImgEl.classList.add('diff-old-tint'); newSilkImgEl.classList.add('diff-new-tint'); }
+                }
+            } else if (showOld && oldUrl) {
+                wOld.classList.remove('hidden');
+            } else if (currUrl) {
+                wNew.classList.remove('hidden');
+            }
+            
+            return { currUrl, oldUrl };
+        }
+
+        function renderView() {
+            if (activeIndex < 0) return;
+            const file = diffData[activeIndex];
             const isSch = file.name.endsWith('.kicad_sch');
             const isPcb = file.name.endsWith('.kicad_pcb');
 
@@ -707,37 +847,31 @@
             noSelectionEl.classList.add('hidden');
             noOldMsgEl.classList.add('hidden');
             
+            // Start entirely fresh by hiding visual components
+            document.getElementById('pane').classList.add('hidden');
             viewerContainer.classList.add('hidden');
             textDiffContainer.classList.add('hidden');
             bomContainer.classList.add('hidden');
             todosContainer.classList.add('hidden');
             healthContainer.classList.add('hidden');
-
-            // Set highlighted button states based on variables
-            btnToggleSwipe.classList.toggle('btn-active', swipeMode);
-            btnToggleOverlay.classList.toggle('btn-active', overlayMode);
-            btnToggleDiff.classList.toggle('btn-active', showOld);
+            sliderHandle.classList.add('hidden'); 
+            swipeLabels.classList.add('hidden');
 
             // --- Update PCB Dimensions ---
             if (isPcb && currentTab === 'visual') {
                 dimContainer.classList.remove('hidden');
                 const dims = file.dimensions || {curr: null, old: null};
-                
                 if (dims.curr) {
                     let dimText = `📐 ${dims.curr.w} x ${dims.curr.h} mm (${dims.curr.area} mm²)`;
                     if (dims.old && (dims.old.w !== dims.curr.w || dims.old.h !== dims.curr.h)) {
                         dimText = `📐 <span class="color-err" style="text-decoration:line-through; margin-right:4px;">${dims.old.w}x${dims.old.h}</span> ➔ <span class="color-new" style="margin-left:4px;">${dims.curr.w} x ${dims.curr.h} mm</span>`;
                     }
                     dimContainer.innerHTML = dimText;
-                } else {
-                    dimContainer.innerHTML = "📐 Dims: Unknown";
-                }
-            } else {
-                dimContainer.classList.add('hidden');
-            }
+                } else { dimContainer.innerHTML = "📐 Dims: Unknown"; }
+            } else { dimContainer.classList.add('hidden'); }
 
             if (currentTab === 'bom') {
-                btnToggleDiff.classList.add('hidden'); btnToggleOverlay.classList.add('hidden'); btnToggleSwipe.classList.add('hidden'); resetBtn.classList.add('hidden');
+                btnToggleDiff.classList.add('hidden'); btnToggleOverlay.classList.add('hidden'); btnToggleSwipe.classList.add('hidden'); btnToggleSplit.classList.add('hidden'); resetBtn.classList.add('hidden');
                 bomContainer.classList.remove('hidden');
                 bomContainer.innerHTML = renderGroupedBom(file.bomData.old || {}, file.bomData.curr || {});
                 statusTextEl.innerHTML = `Showing: <strong>Modern BOM</strong>`;
@@ -745,7 +879,7 @@
             }
 
             if (currentTab === 'netlist' || currentTab === 'pcb-logic') {
-                btnToggleDiff.classList.add('hidden'); btnToggleOverlay.classList.add('hidden'); btnToggleSwipe.classList.add('hidden'); resetBtn.classList.add('hidden');
+                btnToggleDiff.classList.add('hidden'); btnToggleOverlay.classList.add('hidden'); btnToggleSwipe.classList.add('hidden'); btnToggleSplit.classList.add('hidden'); resetBtn.classList.add('hidden');
                 textDiffContainer.classList.remove('hidden');
                 let diffContent = currentTab === 'netlist' ? file.netlistDiff : file.pcbLogicDiff;
                 let tabName = currentTab === 'netlist' ? "Netlist Text Diff" : "Net/Component Changes";
@@ -755,7 +889,7 @@
             }
             
             if (currentTab === 'health') {
-                btnToggleDiff.classList.add('hidden'); btnToggleOverlay.classList.add('hidden'); btnToggleSwipe.classList.add('hidden'); resetBtn.classList.add('hidden');
+                btnToggleDiff.classList.add('hidden'); btnToggleOverlay.classList.add('hidden'); btnToggleSwipe.classList.add('hidden'); btnToggleSplit.classList.add('hidden'); resetBtn.classList.add('hidden');
                 healthContainer.classList.remove('hidden');
                 
                 const health = file.health || {new: [], resolved: [], unresolved: []};
@@ -786,7 +920,7 @@
             }
 
             if (currentTab === 'todos') {
-                btnToggleDiff.classList.add('hidden'); btnToggleOverlay.classList.add('hidden'); btnToggleSwipe.classList.add('hidden'); resetBtn.classList.add('hidden');
+                btnToggleDiff.classList.add('hidden'); btnToggleOverlay.classList.add('hidden'); btnToggleSwipe.classList.add('hidden'); btnToggleSplit.classList.add('hidden'); resetBtn.classList.add('hidden');
                 todosContainer.classList.remove('hidden');
                 
                 const todos = file.todos || {curr: [], old: []};
@@ -806,112 +940,134 @@
                 return;
             }
 
-            // --- Visual View ---
+            // --- Visual View Core ---
             viewerContainer.classList.remove('hidden');
-            viewerContainer.classList.remove('overlay-active', 'sch-diff-container');
-            wrapperNew.classList.remove('overlay-blend-mode', 'sch-overlay-mode');
-            oldImgEl.classList.remove('diff-old-tint', 'sch-diff-old');
-            newImgEl.classList.remove('diff-new-tint', 'sch-diff-new');
-            oldSilkImgEl.classList.remove('diff-old-tint', 'sch-diff-old');
-            newSilkImgEl.classList.remove('diff-new-tint', 'sch-diff-new');
+            document.getElementById('pane').classList.remove('hidden');
             
-            if (oldUrl && currUrl) { btnToggleDiff.classList.remove('hidden'); btnToggleOverlay.classList.remove('hidden'); btnToggleSwipe.classList.remove('hidden'); } 
-            else { btnToggleDiff.classList.add('hidden'); btnToggleOverlay.classList.add('hidden'); btnToggleSwipe.classList.add('hidden'); }
+            // Set highlighted button states
+            btnToggleSwipe.classList.toggle('btn-active', swipeMode && !splitMode);
+            btnToggleOverlay.classList.toggle('btn-active', overlayMode);
+            btnToggleDiff.classList.toggle('btn-active', showOld);
+            btnToggleSplit.classList.toggle('btn-active', splitMode);
+
+            if (splitMode && isPcb) {
+                viewerContainer.classList.add('split-active');
+                document.getElementById('pane-right').classList.remove('hidden');
+                document.getElementById('right-layer-label').classList.remove('hidden');
+                layerDropRight.classList.remove('hidden');
+            } else {
+                viewerContainer.classList.remove('split-active');
+                document.getElementById('pane-right').classList.add('hidden');
+                document.getElementById('right-layer-label').classList.add('hidden');
+                layerDropRight.classList.add('hidden');
+            }
+
+            const leftState = setupPane("", currentLayer);
+            let oldUrl = leftState.oldUrl, currUrl = leftState.currUrl;
+
+            if (splitMode && isPcb) {
+                setupPane("-right", currentLayerRight);
+            }
+
+            if (oldUrl && currUrl) { 
+                btnToggleDiff.classList.remove('hidden'); 
+                btnToggleOverlay.classList.remove('hidden'); 
+                btnToggleSwipe.classList.remove('hidden'); 
+            } else { 
+                btnToggleDiff.classList.add('hidden'); 
+                btnToggleOverlay.classList.add('hidden'); 
+                btnToggleSwipe.classList.add('hidden'); 
+            }
+            
+            if (isPcb) btnToggleSplit.classList.remove('hidden');
+            else btnToggleSplit.classList.add('hidden');
             
             const isPdf = (currUrl && currUrl.startsWith('data:application/pdf')) || (oldUrl && oldUrl.startsWith('data:application/pdf'));
+            if (isPdf) resetBtn.classList.add('hidden');
+            else resetBtn.classList.remove('hidden');
 
-            if (isSch && !isPdf && !overlayMode) {
-                newImgEl.style.backgroundColor = '#ffffff'; oldImgEl.style.backgroundColor = '#ffffff';
-                newImgEl.style.filter = 'none'; oldImgEl.style.filter = 'none';
-            } else {
-                newImgEl.style.backgroundColor = ''; oldImgEl.style.backgroundColor = '';
-                newImgEl.style.filter = ''; oldImgEl.style.filter = '';
-            }
-
-            imgWrapperOld.classList.add('hidden'); imgWrapperNew.classList.add('hidden');
-            [newImgEl, oldImgEl, newSilkImgEl, oldSilkImgEl, newPdfEl, oldPdfEl, newSilkPdfEl, oldSilkPdfEl].forEach(e => e.classList.add('hidden'));
-
-            if (isPdf) {
-                resetBtn.classList.add('hidden');
-                if (oldUrl) { oldPdfEl.src = oldUrl; oldPdfEl.classList.remove('hidden'); }
-                if (currUrl) { newPdfEl.src = currUrl; newPdfEl.classList.remove('hidden'); }
-                if (oldSilkUrl) { oldSilkPdfEl.src = oldSilkUrl; oldSilkPdfEl.classList.remove('hidden'); }
-                if (currSilkUrl) { newSilkPdfEl.src = currSilkUrl; newSilkPdfEl.classList.remove('hidden'); }
-            } else {
-                resetBtn.classList.remove('hidden');
-                imgWrapperOld.classList.remove('hidden'); imgWrapperNew.classList.remove('hidden');
-                if (oldUrl) { oldImgEl.src = oldUrl; oldImgEl.classList.remove('hidden'); }
-                if (currUrl) { newImgEl.src = currUrl; newImgEl.classList.remove('hidden'); }
-                if (oldSilkUrl) { oldSilkImgEl.src = oldSilkUrl; oldSilkImgEl.classList.remove('hidden'); }
-                if (currSilkUrl) { newSilkImgEl.src = currSilkUrl; newSilkImgEl.classList.remove('hidden'); }
-            }
-
-            wrapperOld.classList.add('hidden'); wrapperNew.classList.add('hidden');
-            wrapperNew.style.clipPath = ''; sliderHandle.classList.add('hidden'); swipeLabels.classList.add('hidden');
-
-            if (swipeMode && oldUrl && currUrl) {
-                wrapperOld.classList.remove('hidden'); wrapperNew.classList.remove('hidden'); 
+            if (splitMode) {
+                statusTextEl.innerHTML = 'Showing: <strong style="color: #00bcd4;">Split View</strong>';
+                if(overlayMode) swipeLabels.classList.remove('hidden');
+            } else if (swipeMode && oldUrl && currUrl) {
                 sliderHandle.classList.remove('hidden'); swipeLabels.classList.remove('hidden');
-                wrapperNew.style.clipPath = `polygon(0 0, ${swipePos}% 0, ${swipePos}% 100%, 0 100%)`; sliderHandle.style.left = swipePos + '%';
                 statusTextEl.innerHTML = 'Showing: <strong style="color: #00bcd4;">Swipe Mode</strong>';
             } else if (overlayMode && oldUrl && currUrl) {
-                wrapperOld.classList.remove('hidden'); wrapperNew.classList.remove('hidden'); 
-                swipeLabels.classList.remove('hidden'); // Show labels for color correlation in Overlay Mode
-                
-                if (isSch) {
-                    wrapperNew.classList.add('sch-overlay-mode');
-                    oldImgEl.classList.add('sch-diff-old');
-                    newImgEl.classList.add('sch-diff-new');
-                    viewerContainer.classList.add('sch-diff-container');
-                } else {
-                    viewerContainer.classList.add('overlay-active');
-                    wrapperNew.classList.add('overlay-blend-mode');
-                    oldImgEl.classList.add('diff-old-tint');
-                    newImgEl.classList.add('diff-new-tint');
-                    if (showSilk) { oldSilkImgEl.classList.add('diff-old-tint'); newSilkImgEl.classList.add('diff-new-tint'); }
-                }
+                swipeLabels.classList.remove('hidden');
                 statusTextEl.innerHTML = 'Showing: <strong class="color-old">Overlay Mode</strong>';
             } else if (showOld && oldUrl) {
-                wrapperOld.classList.remove('hidden'); statusTextEl.innerHTML = 'Showing: <strong class="color-err">' + targetName + '</strong>';
+                statusTextEl.innerHTML = 'Showing: <strong class="color-err">' + targetName + '</strong>';
             } else {
-                if (currUrl) { wrapperNew.classList.remove('hidden'); if (!oldUrl && file.status !== "Unchanged") noOldMsgEl.classList.remove('hidden'); }
+                if (currUrl && !oldUrl && file.status !== "Unchanged") noOldMsgEl.classList.remove('hidden');
                 statusTextEl.innerHTML = 'Showing: <strong class="color-new">Local Changes</strong>';
             }
         }
 
-        function toggleSwipe() { if (activeIndex < 0 || currentTab !== 'visual') return; const visual = diffData[activeIndex].visuals[currentLayer]; if (visual && visual.old && visual.old.data && visual.curr && visual.curr.data) { swipeMode = !swipeMode; if (swipeMode) { overlayMode = false; showOld = false; } renderView(); } }
-        function toggleOverlay() { if (activeIndex < 0 || currentTab !== 'visual') return; const visual = diffData[activeIndex].visuals[currentLayer]; if (visual && visual.old && visual.old.data && visual.curr && visual.curr.data) { overlayMode = !overlayMode; if (overlayMode) { swipeMode = false; showOld = false; } renderView(); } }
-        function toggleDiff() { if (activeIndex < 0 || currentTab !== 'visual') return; const visual = diffData[activeIndex].visuals[currentLayer]; if (visual && visual.old && visual.old.data) { showOld = !showOld; overlayMode = false; swipeMode = false; renderView(); } }
+        function toggleSplit() { 
+            if (activeIndex < 0 || currentTab !== 'visual') return; 
+            splitMode = !splitMode; 
+            if (splitMode) swipeMode = false; // Disable swipe in split mode to avoid visual conflicts
+            renderView(); 
+        }
+
+        function toggleSwipe() { 
+            if (activeIndex < 0 || currentTab !== 'visual') return; 
+            const visual = diffData[activeIndex].visuals[currentLayer]; 
+            if (visual && visual.old && visual.old.data && visual.curr && visual.curr.data) { 
+                swipeMode = !swipeMode; 
+                if (swipeMode) { overlayMode = false; showOld = false; splitMode = false; } 
+                renderView(); 
+            } 
+        }
+        
+        function toggleOverlay() { 
+            if (activeIndex < 0 || currentTab !== 'visual') return; 
+            const visual = diffData[activeIndex].visuals[currentLayer]; 
+            if (visual && visual.old && visual.old.data && visual.curr && visual.curr.data) { 
+                overlayMode = !overlayMode; 
+                if (overlayMode) { swipeMode = false; showOld = false; } 
+                renderView(); 
+            } 
+        }
+        
+        function toggleDiff() { 
+            if (activeIndex < 0 || currentTab !== 'visual') return; 
+            const visual = diffData[activeIndex].visuals[currentLayer]; 
+            if (visual && visual.old && visual.old.data) { 
+                showOld = !showOld; 
+                overlayMode = false; 
+                swipeMode = false; 
+                renderView(); 
+            } 
+        }
 
         document.addEventListener('keydown', function(event) {
-            if(document.activeElement.tagName === 'SELECT' || document.activeElement.tagName === 'INPUT') return;
+            if(document.activeElement.tagName === 'SELECT' || document.activeElement.tagName === 'INPUT' && document.activeElement.type !== 'checkbox') return;
             if (event.code === 'Space') { event.preventDefault(); toggleDiff(); }
             else if (event.code === 'KeyO') { event.preventDefault(); toggleOverlay(); }
             else if (event.code === 'KeyW') { event.preventDefault(); toggleSwipe(); }
+            else if (event.code === 'KeyV') { event.preventDefault(); toggleSplit(); }
             else if (event.code === 'KeyT') { event.preventDefault(); toggleTheme(); }
             else if (event.code === 'KeyC') { event.preventDefault(); toggleColorblind(); }
-            else if (event.key >= '1' && event.key <= '9') { const idx = parseInt(event.key) - 1; if (layerDrop.options[idx]) { layerDrop.selectedIndex = idx; changeLayer(layerDrop.value); } }
-            else if (event.code === 'KeyS') { silkCheckbox.checked = !silkCheckbox.checked; toggleSilk(silkCheckbox.checked); }
+            else if (event.code === 'KeyF') { event.preventDefault(); flipCheckbox.checked = !flipCheckbox.checked; toggleFlip(flipCheckbox.checked); }
+            else if (event.key >= '1' && event.key <= '9') { const idx = parseInt(event.key) - 1; if (layerDrop.options[idx]) { layerDrop.selectedIndex = idx; changeLayer(layerDrop.value, 'left'); } }
+            else if (event.code === 'KeyS') { event.preventDefault(); silkCheckbox.checked = !silkCheckbox.checked; toggleSilk(silkCheckbox.checked); }
         });
 
         // Application Entry Point - Decompress JSON stream
         async function bootViewer() {
             try {
                 const b64Data = "__DIFF_B64_GZIP__";
-                
-                // 1. Safety Check: Did the Python backend actually run and replace the payload?
                 if (b64Data === "__" + "DIFF_B64_GZIP" + "__") {
                     throw new Error("Synchronization Error: The literal string '__DIFF_B64_GZIP__' was found. Please make sure you updated 'diff_window.py' so it properly injects the compressed payload.");
                 }
 
-                // Decode base64 to binary
                 const binaryString = atob(b64Data);
                 const bytes = new Uint8Array(binaryString.length);
                 for (let i = 0; i < binaryString.length; i++) {
                     bytes[i] = binaryString.charCodeAt(i);
                 }
                 
-                // 2. Bypass Firefox Blob chunking bug by using Fetch API's native Response body pipe
                 const stream = new Response(bytes).body.pipeThrough(new DecompressionStream('gzip'));
                 const text = await new Response(stream).text();
                 
@@ -920,17 +1076,11 @@
             } catch (err) {
                 console.error("Decompression failed:", err);
                 document.getElementById('status-text').innerHTML = '<span class="color-err">Failed to decompress data.</span>';
-                
-                // Print the EXACT javascript error to the screen so we aren't guessing
                 document.getElementById('viewer-container').innerHTML = `
                     <div style="text-align: center; padding: 40px; color: var(--text-main);">
                         <h2 class="color-err">⚠️ Viewer Initialization Failed</h2>
                         <p style="font-family: monospace; background: var(--bg-sidebar); padding: 15px; border-radius: 4px; border: 1px solid var(--border-color); text-align: left; display: inline-block;">
                             ${err.name}: ${err.message}
-                        </p>
-                        <p style="color: var(--text-muted); font-size: 14px; margin-top: 20px;">
-                            <strong>Diagnosis Tips:</strong><br>
-                            If you see <code>InvalidCharacterError</code>, it usually means you updated this HTML file but forgot to update <code>diff_window.py</code>.
                         </p>
                     </div>`;
             }
