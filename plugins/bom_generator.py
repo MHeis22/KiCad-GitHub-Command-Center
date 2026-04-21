@@ -32,9 +32,6 @@ class BOMGenerator:
         for sch in sch_files:
             all_bom.update(get_bom_data(sch, mpn_field=self.mpn_field))
 
-        # Filter out unannotated/template components (e.g., 'R', 'C', 'U') that lack numbers
-        all_bom = {ref: data for ref, data in all_bom.items() if any(c.isdigit() for c in ref)}
-
         if not all_bom:
             return []
 
@@ -74,6 +71,9 @@ class BOMGenerator:
                 groups[sig] = {'refs': [], 'data': data}
             groups[sig]['refs'].append(ref)
 
+        if not groups:
+            return
+
         with open(path, 'w', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
             writer.writerow(['Qty', 'Reference', 'Value', 'Footprint', self.mpn_field, 'Description'])
@@ -108,6 +108,9 @@ class BOMGenerator:
             if sig not in groups:
                 groups[sig] = {'refs': [], 'mpn': mpn}
             groups[sig]['refs'].append(ref)
+
+        if not groups:
+            return
 
         with open(path, 'w', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)

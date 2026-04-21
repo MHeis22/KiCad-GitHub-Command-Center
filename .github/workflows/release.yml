@@ -1,0 +1,46 @@
+name: Package and Release Plugin
+
+# Trigger the workflow automatically when metadata.json is updated on the main branch,
+# or manually via the Actions tab.
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'metadata.json'
+  workflow_dispatch:
+
+# Required permission for the GITHUB_TOKEN to create tags and releases
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Extract Version from metadata.json
+        id: get_version
+        run: |
+          # Use jq to read the 'version' key from the first element of the 'versions' array
+          VERSION=$(jq -r '.versions[0].version' metadata.json)
+          
+          # Save the version to the GitHub Environment to use in later steps
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "Extracted version: $VERSION"
+
+      - name: Create Zip Archive
+        run: |
+          # Zip the specific folders and file together using your requested naming scheme
+          zip -r GitHubCommandCenterV${{ env.VERSION }}.zip plugins resources metadata.json
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.VERSION }}
+          name: Release v${{ env.VERSION }}
+          files: GitHubCommandCenterV${{ env.VERSION }}.zip
+          generate_release_notes: true

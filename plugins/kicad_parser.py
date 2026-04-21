@@ -3,7 +3,7 @@ import re
 
 def get_pcb_layers(pcb_file):
     """Quickly parse the .kicad_pcb file to find active copper layers and technical layers."""
-    layers = ["F.Cu", "B.Cu", "F.Silkscreen", "B.Silkscreen", "Edge.Cuts"]
+    layers = ["F.Cu", "B.Cu", "F.Silkscreen", "B.Silkscreen", "F.Mask", "B.Mask", "F.Paste", "B.Paste", "Edge.Cuts"]
     if not os.path.exists(pcb_file):
         return layers
         
@@ -14,7 +14,7 @@ def get_pcb_layers(pcb_file):
             # Match all valid copper types instead of just 'signal'
             matches = re.findall(r'\(\d+\s+"([^"]+)"\s+(?:signal|power|mixed|jumper)\)', content)
             if matches:
-                layers = matches + ["F.Silkscreen", "B.Silkscreen", "Edge.Cuts"]
+                layers = matches + ["F.Silkscreen", "B.Silkscreen", "F.Mask", "B.Mask", "F.Paste", "B.Paste", "Edge.Cuts"]
                 
                 # Fail-safe: ensure outer layers aren't accidentally dropped if parsing behaves oddly
                 if "F.Cu" not in layers: layers.insert(0, "F.Cu")
@@ -219,6 +219,7 @@ def get_bom_data(file_path, include_excluded_from_bom=False, mpn_field=None):
                 ref = ref_match.group(1)
                 
                 if ref == "Reference" or ref.startswith('TP') or ref.startswith('#'): continue # EXCLUDE TEMPLATES, TEST POINTS, AND VIRTUAL PARTS
+                if not any(c.isdigit() for c in ref): continue # EXCLUDE UNANNOTATED/GHOST SYMBOLS (e.g. bare 'R', 'C', 'L')
                 
                 val_match = re.search(r'\(\s*property\s+"Value"\s+"([^"]*)"', block)
                 fp_match  = re.search(r'\(\s*property\s+"Footprint"\s+"([^"]*)"', block)
