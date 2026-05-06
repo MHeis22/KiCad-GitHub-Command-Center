@@ -129,7 +129,7 @@ class DiffEngine:
             except OSError: pass
 
         try:
-            cmd = [self.kicad_cli, "pcb" if is_pcb else "sch", "drc" if is_pcb else "erc", "--format", "json", "--output", out_json, file_path]
+            cmd = [self.kicad_cli, "pcb", "drc", "--format", "json", "--output", out_json, file_path]
             subprocess.run(cmd, capture_output=True, timeout=120, cwd=self.project_dir, creationflags=CREATE_NO_WINDOW)
             
             if os.path.exists(out_json):
@@ -362,8 +362,8 @@ class DiffEngine:
                         old_net = os.path.join(self.tmp_dir, f"old_{safe_name}.net")
                         tasks.append({'type': 'netlist', 'version': 'old', 'cli_args': [self.kicad_cli, "sch", "export", "netlist", old_board_tmp, "--output", old_net], 'out_path': old_net})
 
-                # DRC Tasks
-                if run_drc:
+                # DRC Tasks (PCB only)
+                if run_drc and is_pcb:
                     if status_text != "Deleted":
                         tasks.append({'type': 'drc', 'version': 'curr', 'file_path': file_path, 'is_pcb': is_pcb})
                     if has_old:

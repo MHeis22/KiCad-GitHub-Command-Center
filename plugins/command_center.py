@@ -100,8 +100,8 @@ class CommandCenterDialog(wx.Dialog):
         btn_diff_all = wx.Button(self.scroll_panel, label="View All Files (Including Unchanged)", size=(-1, 40))
         btn_diff_all.Bind(wx.EVT_BUTTON, self.on_diff_all)
         
-        self.cb_drc = wx.CheckBox(self.scroll_panel, label="Run DRC/ERC Checks (Shows violations as diffs)")
-        self.cb_drc.SetToolTip("Executes KiCad's design rules checker (PCB) and electrical rules checker (Schematic) and compares violations.")
+        self.cb_drc = wx.CheckBox(self.scroll_panel, label="Run DRC Checks (Shows violations as diffs)")
+        self.cb_drc.SetToolTip("Executes KiCad's design rules checker on PCB files and compares violations.")
         self.cb_drc.SetValue(False)
 
         sizer_review.Add(btn_diff, flag=wx.EXPAND | wx.ALL, border=5)
