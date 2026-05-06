@@ -1,6 +1,7 @@
 import os
 import json
 import subprocess
+import shutil
 
 # Fix for Windows: prevents the plugin from popping up CMD windows or hanging
 CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
@@ -34,3 +35,19 @@ def is_git_installed():
         return True
     except (FileNotFoundError, subprocess.CalledProcessError):
         return False
+
+def find_kicad_cli():
+    """Returns the path to kicad-cli, searching known locations if not in PATH."""
+    if os.name == "nt":
+        return "kicad-cli.exe"
+    candidate = shutil.which("kicad-cli")
+    if candidate:
+        return candidate
+    # macOS fallback — KiCad installer does not add to PATH
+    for path in [
+        "/Applications/KiCad/KiCad.app/Contents/MacOS/kicad-cli",
+        "/Applications/KiCad/kicad-cli",
+    ]:
+        if os.path.isfile(path):
+            return path
+    return "kicad-cli"

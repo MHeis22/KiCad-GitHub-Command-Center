@@ -7,7 +7,7 @@ import difflib
 import re
 import glob
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from .utils import CREATE_NO_WINDOW
+from .utils import CREATE_NO_WINDOW, find_kicad_cli
 from .kicad_parser import (
     get_pcb_layers, get_pcb_dimensions, get_pcb_structure,
     get_sch_structure, get_bom_data, compare_logic_data, extract_todos
@@ -21,7 +21,7 @@ class DiffEngine:
         self.tmp_dir = os.path.join(tempfile.gettempdir(), "kicad_git_diff")
         os.makedirs(self.tmp_dir, exist_ok=True)
         
-        self.kicad_cli = "kicad-cli.exe" if sys.platform == "win32" else "kicad-cli"
+        self.kicad_cli = find_kicad_cli()
         self.git_cmd = "git.exe" if sys.platform == "win32" else "git"
 
     def get_kicad_version(self):
