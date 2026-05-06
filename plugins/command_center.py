@@ -1,4 +1,5 @@
 import wx
+import wx.lib.buttons as wxbuttons
 import os
 import re
 import subprocess
@@ -6,6 +7,16 @@ import pcbnew
 import webbrowser
 import threading
 from datetime import datetime
+
+
+def _is_dark_mode():
+    bg = wx.SystemSettings.GetColour(wx.SYS_COLOUR_WINDOW)
+    return (int(bg.Red()) + int(bg.Green()) + int(bg.Blue())) < 384
+
+
+def _btn_text_colour():
+    return wx.Colour(255, 255, 255) if _is_dark_mode() else wx.Colour(0, 0, 0)
+
 from .utils import CREATE_NO_WINDOW, load_settings, save_settings, get_last_target, save_last_target
 from .ui_dialogs import SettingsDialog, CommitDialog
 from .diff_engine import DiffEngine
@@ -81,9 +92,9 @@ class CommandCenterDialog(wx.Dialog):
         box_review = wx.StaticBox(self.scroll_panel, label="Review and Validation")
         sizer_review = wx.StaticBoxSizer(box_review, wx.VERTICAL)
         
-        btn_diff = wx.Button(self.scroll_panel, label="View Local Changes (Visual Diff)", size=(-1, 40))
-        btn_diff.SetBackgroundColour(wx.Colour(220, 240, 255)) # Light Blue (Primary)
-        btn_diff.SetForegroundColour(wx.Colour(0, 0, 0)) # Force black text for dark mode compatibility
+        btn_diff = wxbuttons.GenButton(self.scroll_panel, label="View Local Changes (Visual Diff)", size=(-1, 40))
+        btn_diff.SetBackgroundColour(wx.Colour(220, 240, 255))
+        btn_diff.SetForegroundColour(_btn_text_colour())
         btn_diff.Bind(wx.EVT_BUTTON, self.on_diff)
         
         btn_diff_all = wx.Button(self.scroll_panel, label="View All Files (Including Unchanged)", size=(-1, 40))
@@ -104,7 +115,7 @@ class CommandCenterDialog(wx.Dialog):
         box_local = wx.StaticBox(self.scroll_panel, label="Local Workspace")
         sizer_local = wx.StaticBoxSizer(box_local, wx.VERTICAL)
         
-        self.btn_commit = wx.Button(self.scroll_panel, label="Save Snapshot (Quick Commit)", size=(-1, 40))
+        self.btn_commit = wxbuttons.GenButton(self.scroll_panel, label="Save Snapshot (Quick Commit)", size=(-1, 40))
         self.btn_commit.Bind(wx.EVT_BUTTON, self.on_commit)
         
         btn_switch = wx.Button(self.scroll_panel, label="Switch Working Branch", size=(-1, 40))
@@ -123,9 +134,9 @@ class CommandCenterDialog(wx.Dialog):
         sizer_local.Add(stash_sizer, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=5)
         
         # --- JLCPCB Constraints Enforcer ---
-        btn_jlc_rules = wx.Button(self.scroll_panel, label="Set JLCPCB Safe Constraints (Free Tier)", size=(-1, 40))
-        btn_jlc_rules.SetBackgroundColour(wx.Colour(230, 230, 250)) # Light Lavender to separate design features
-        btn_jlc_rules.SetForegroundColour(wx.Colour(0, 0, 0)) # Force black text
+        btn_jlc_rules = wxbuttons.GenButton(self.scroll_panel, label="Set JLCPCB Safe Constraints (Free Tier)", size=(-1, 40))
+        btn_jlc_rules.SetBackgroundColour(wx.Colour(230, 230, 250))
+        btn_jlc_rules.SetForegroundColour(_btn_text_colour())
         btn_jlc_rules.Bind(wx.EVT_BUTTON, self.on_set_jlc_constraints)
         sizer_local.Add(btn_jlc_rules, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=5)
 
@@ -143,15 +154,15 @@ class CommandCenterDialog(wx.Dialog):
         box_remote = wx.StaticBox(self.scroll_panel, label="Remote and Sync")
         sizer_remote = wx.StaticBoxSizer(box_remote, wx.VERTICAL)
 
-        self.btn_push = wx.Button(self.scroll_panel, label="Push Changes to Remote", size=(-1, 40))
+        self.btn_push = wxbuttons.GenButton(self.scroll_panel, label="Push Changes to Remote", size=(-1, 40))
         self.btn_push.Bind(wx.EVT_BUTTON, self.on_push)
         
         btn_remote = wx.Button(self.scroll_panel, label="Open Remote Web Page", size=(-1, 40))
         btn_remote.Bind(wx.EVT_BUTTON, self.on_open_remote)
         
-        btn_sync = wx.Button(self.scroll_panel, label="Download from Server (Force Sync)", size=(-1, 40))
-        btn_sync.SetBackgroundColour(wx.Colour(255, 200, 200)) # Light Red (Destructive local)
-        btn_sync.SetForegroundColour(wx.Colour(0, 0, 0)) # Force black text
+        btn_sync = wxbuttons.GenButton(self.scroll_panel, label="Download from Server (Force Sync)", size=(-1, 40))
+        btn_sync.SetBackgroundColour(wx.Colour(255, 200, 200))
+        btn_sync.SetForegroundColour(_btn_text_colour())
         btn_sync.Bind(wx.EVT_BUTTON, self.on_force_sync)
 
         sizer_remote.Add(self.btn_push, flag=wx.EXPAND | wx.ALL, border=5)
@@ -170,7 +181,7 @@ class CommandCenterDialog(wx.Dialog):
             "4. Re-open the file to see the loaded version."
         )
         st_help = wx.StaticText(self.scroll_panel, label=help_text)
-        st_help.SetForegroundColour(wx.Colour(100, 100, 100))
+        st_help.SetForegroundColour(wx.SystemSettings.GetColour(wx.SYS_COLOUR_GRAYTEXT))
         help_sizer.Add(st_help, flag=wx.ALL, border=5)
         self.scroll_vbox.Add(help_sizer, flag=wx.EXPAND | wx.ALL, border=10)
         
@@ -256,9 +267,9 @@ class CommandCenterDialog(wx.Dialog):
         setup_box = wx.StaticBox(self.scroll_panel, label="New Project Setup")
         self.setup_section_container = wx.StaticBoxSizer(setup_box, wx.VERTICAL)
         
-        btn_setup = wx.Button(self.scroll_panel, label="Initialize and Link to Remote")
+        btn_setup = wxbuttons.GenButton(self.scroll_panel, label="Initialize and Link to Remote")
         btn_setup.SetBackgroundColour(wx.Colour(200, 255, 200))
-        btn_setup.SetForegroundColour(wx.Colour(0, 0, 0)) # Force black text
+        btn_setup.SetForegroundColour(_btn_text_colour())
         btn_setup.Bind(wx.EVT_BUTTON, self.on_setup_repo)
         
         self.setup_section_container.Add(btn_setup, flag=wx.EXPAND | wx.ALL, border=5)
@@ -283,8 +294,8 @@ class CommandCenterDialog(wx.Dialog):
             if hasattr(self, 'btn_commit'):
                 self.btn_commit.SetBackgroundColour(wx.Colour(240, 240, 240))
                 self.btn_push.SetBackgroundColour(wx.Colour(240, 240, 240))
-                self.btn_commit.SetForegroundColour(wx.Colour(0, 0, 0))
-                self.btn_push.SetForegroundColour(wx.Colour(0, 0, 0))
+                self.btn_commit.SetForegroundColour(_btn_text_colour())
+                self.btn_push.SetForegroundColour(_btn_text_colour())
             return
         try:
             # Single call gives us branch name, ahead/behind, and porcelain status
@@ -325,7 +336,7 @@ class CommandCenterDialog(wx.Dialog):
                     self.btn_commit.SetBackgroundColour(wx.Colour(230, 245, 230))
                     commit_font.SetWeight(wx.FONTWEIGHT_NORMAL)
 
-                self.btn_commit.SetForegroundColour(wx.Colour(0, 0, 0))
+                self.btn_commit.SetForegroundColour(_btn_text_colour())
                 self.btn_commit.SetFont(commit_font)
 
                 push_font = self.btn_push.GetFont()
@@ -337,7 +348,7 @@ class CommandCenterDialog(wx.Dialog):
                     self.btn_push.SetBackgroundColour(wx.Colour(255, 240, 220))
                     push_font.SetWeight(wx.FONTWEIGHT_NORMAL)
                 
-                self.btn_push.SetForegroundColour(wx.Colour(0, 0, 0)) # Ensure black text
+                self.btn_push.SetForegroundColour(_btn_text_colour())
                 self.btn_push.SetFont(push_font)
                 
                 self.btn_commit.Refresh()
