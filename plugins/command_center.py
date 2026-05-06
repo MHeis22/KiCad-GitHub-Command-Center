@@ -2,10 +2,12 @@ import wx
 import wx.lib.buttons as wxbuttons
 import os
 import re
+import json
 import subprocess
 import pcbnew
 import webbrowser
 import threading
+import urllib.request
 from datetime import datetime
 
 
@@ -16,6 +18,11 @@ def _is_dark_mode():
 
 def _btn_text_colour():
     return wx.Colour(255, 255, 255) if _is_dark_mode() else wx.Colour(0, 0, 0)
+
+
+def _theme_colour(light: tuple, dark: tuple) -> wx.Colour:
+    rgb = dark if _is_dark_mode() else light
+    return wx.Colour(*rgb)
 
 from .utils import CREATE_NO_WINDOW, load_settings, save_settings, get_last_target, save_last_target
 from .ui_dialogs import SettingsDialog, CommitDialog
@@ -93,7 +100,7 @@ class CommandCenterDialog(wx.Dialog):
         sizer_review = wx.StaticBoxSizer(box_review, wx.VERTICAL)
         
         btn_diff = wxbuttons.GenButton(self.scroll_panel, label="View Local Changes (Visual Diff)", size=(-1, 40))
-        btn_diff.SetBackgroundColour(wx.Colour(220, 240, 255))
+        btn_diff.SetBackgroundColour(_theme_colour((220, 240, 255), (40, 90, 160)))
         btn_diff.SetForegroundColour(_btn_text_colour())
         btn_diff.Bind(wx.EVT_BUTTON, self.on_diff)
         
@@ -140,7 +147,7 @@ class CommandCenterDialog(wx.Dialog):
 
         # --- JLCPCB Constraints Enforcer ---
         btn_jlc_rules = wxbuttons.GenButton(self.scroll_panel, label="Set JLCPCB Safe Constraints (Free Tier)", size=(-1, 40))
-        btn_jlc_rules.SetBackgroundColour(wx.Colour(230, 230, 250))
+        btn_jlc_rules.SetBackgroundColour(_theme_colour((230, 230, 250), (90, 70, 160)))
         btn_jlc_rules.SetForegroundColour(_btn_text_colour())
         btn_jlc_rules.Bind(wx.EVT_BUTTON, self.on_set_jlc_constraints)
         sizer_local.Add(btn_jlc_rules, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=5)
@@ -166,7 +173,7 @@ class CommandCenterDialog(wx.Dialog):
         btn_remote.Bind(wx.EVT_BUTTON, self.on_open_remote)
         
         btn_sync = wxbuttons.GenButton(self.scroll_panel, label="Download from Server (Force Sync)", size=(-1, 40))
-        btn_sync.SetBackgroundColour(wx.Colour(255, 200, 200))
+        btn_sync.SetBackgroundColour(_theme_colour((255, 200, 200), (160, 50, 50)))
         btn_sync.SetForegroundColour(_btn_text_colour())
         btn_sync.Bind(wx.EVT_BUTTON, self.on_force_sync)
 
@@ -222,6 +229,46 @@ class CommandCenterDialog(wx.Dialog):
 
         self.update_git_status()
         self._check_and_prompt_git_encoding()
+        threading.Thread(target=self._check_for_updates, daemon=True).start()
+
+    def _check_for_updates(self):
+        try:
+            metadata_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "metadata.json")
+            with open(metadata_path, "r") as f:
+                metadata = json.load(f)
+            versions = metadata.get("versions", [])
+            current = versions[0].get("version", "0.0.0") if versions else "0.0.0"
+
+            api_url = "https://api.github.com/repos/MHeis22/KiCad-GitHub-Command-Center/releases/latest"
+            req = urllib.request.Request(api_url, headers={"User-Agent": "KiCad-GitHub-Command-Center"})
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                data = json.loads(resp.read().decode())
+
+            latest_tag = data.get("tag_name", "").lstrip("v")
+            release_url = data.get("html_url", "")
+
+            def _parse(v):
+                try:
+                    return tuple(int(x) for x in v.split("."))
+                except Exception:
+                    return (0, 0, 0)
+
+            if _parse(latest_tag) > _parse(current):
+                wx.CallAfter(self._show_update_prompt, current, latest_tag, release_url)
+        except Exception:
+            pass  # silently ignore network errors on startup
+
+    def _show_update_prompt(self, current, latest, release_url):
+        msg = (
+            f"A new version of GitHub Command Center is available!\n\n"
+            f"  Installed: v{current}\n"
+            f"  Latest:    v{latest}\n\n"
+            "Would you like to open the release page?"
+        )
+        dlg = wx.MessageDialog(self, msg, "Update Available", wx.YES_NO | wx.ICON_INFORMATION)
+        if dlg.ShowModal() == wx.ID_YES and release_url:
+            webbrowser.open(release_url)
+        dlg.Destroy()
 
     def on_set_jlc_constraints(self, event):
         set_jlcpcb_constraints(self)
@@ -273,7 +320,7 @@ class CommandCenterDialog(wx.Dialog):
         self.setup_section_container = wx.StaticBoxSizer(setup_box, wx.VERTICAL)
         
         btn_setup = wxbuttons.GenButton(self.scroll_panel, label="Initialize and Link to Remote")
-        btn_setup.SetBackgroundColour(wx.Colour(200, 255, 200))
+        btn_setup.SetBackgroundColour(_theme_colour((200, 255, 200), (30, 130, 60)))
         btn_setup.SetForegroundColour(_btn_text_colour())
         btn_setup.Bind(wx.EVT_BUTTON, self.on_setup_repo)
         
@@ -297,8 +344,8 @@ class CommandCenterDialog(wx.Dialog):
         if not os.path.isdir(os.path.join(self.project_dir, ".git")):
             self.status_lbl.SetLabel("Status: Not a Git repository.")
             if hasattr(self, 'btn_commit'):
-                self.btn_commit.SetBackgroundColour(wx.Colour(240, 240, 240))
-                self.btn_push.SetBackgroundColour(wx.Colour(240, 240, 240))
+                self.btn_commit.SetBackgroundColour(_theme_colour((240, 240, 240), (70, 70, 70)))
+                self.btn_push.SetBackgroundColour(_theme_colour((240, 240, 240), (70, 70, 70)))
                 self.btn_commit.SetForegroundColour(_btn_text_colour())
                 self.btn_push.SetForegroundColour(_btn_text_colour())
             return
@@ -335,10 +382,10 @@ class CommandCenterDialog(wx.Dialog):
 
                 commit_font = self.btn_commit.GetFont()
                 if uncommitted_changes:
-                    self.btn_commit.SetBackgroundColour(wx.Colour(150, 255, 150))
+                    self.btn_commit.SetBackgroundColour(_theme_colour((150, 255, 150), (30, 150, 60)))
                     commit_font.SetWeight(wx.FONTWEIGHT_BOLD)
                 else:
-                    self.btn_commit.SetBackgroundColour(wx.Colour(230, 245, 230))
+                    self.btn_commit.SetBackgroundColour(_theme_colour((230, 245, 230), (40, 90, 40)))
                     commit_font.SetWeight(wx.FONTWEIGHT_NORMAL)
 
                 self.btn_commit.SetForegroundColour(_btn_text_colour())
@@ -347,10 +394,10 @@ class CommandCenterDialog(wx.Dialog):
                 push_font = self.btn_push.GetFont()
 
                 if is_ahead:
-                    self.btn_push.SetBackgroundColour(wx.Colour(255, 180, 100))
+                    self.btn_push.SetBackgroundColour(_theme_colour((255, 180, 100), (180, 100, 20)))
                     push_font.SetWeight(wx.FONTWEIGHT_BOLD)
                 else:
-                    self.btn_push.SetBackgroundColour(wx.Colour(255, 240, 220))
+                    self.btn_push.SetBackgroundColour(_theme_colour((255, 240, 220), (120, 80, 30)))
                     push_font.SetWeight(wx.FONTWEIGHT_NORMAL)
                 
                 self.btn_push.SetForegroundColour(_btn_text_colour())
