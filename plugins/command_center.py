@@ -1,10 +1,12 @@
 import wx
 import os
+import re
 import subprocess
 import pcbnew
 import webbrowser
 import threading
-from .utils import CREATE_NO_WINDOW, load_settings, save_settings
+from datetime import datetime
+from .utils import CREATE_NO_WINDOW, load_settings, save_settings, get_last_target, save_last_target
 from .ui_dialogs import SettingsDialog, CommitDialog
 from .diff_engine import DiffEngine
 from .diff_window import DiffWindow
@@ -61,7 +63,12 @@ class CommandCenterDialog(wx.Dialog):
             targets = ["HEAD"]
             
         self.cb_targets = wx.ComboBox(self.scroll_panel, choices=targets, style=wx.CB_READONLY)
-        self.cb_targets.SetSelection(0)
+        # Restore last used target for this project
+        last_target = get_last_target(self.project_dir)
+        if last_target and last_target in targets:
+            self.cb_targets.SetSelection(targets.index(last_target))
+        else:
+            self.cb_targets.SetSelection(0)
         self.cb_targets.Bind(wx.EVT_COMBOBOX, self.on_target_change)
         target_sizer.Add(self.cb_targets, proportion=1, flag=wx.EXPAND)
         
@@ -267,6 +274,7 @@ class CommandCenterDialog(wx.Dialog):
         dlg.Destroy()
 
     def on_target_change(self, event):
+        save_last_target(self.project_dir, self.cb_targets.GetStringSelection())
         self.update_git_status()
 
     def update_git_status(self):
@@ -279,28 +287,36 @@ class CommandCenterDialog(wx.Dialog):
                 self.btn_push.SetForegroundColour(wx.Colour(0, 0, 0))
             return
         try:
-            res_curr = subprocess.run([self.git_cmd, "-C", self.project_dir, "branch", "--show-current"], 
-                                      capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
-            curr_branch = res_curr.stdout.strip() or "Detached HEAD"
+            # Single call gives us branch name, ahead/behind, and porcelain status
+            res_sb = subprocess.run([self.git_cmd, "-C", self.project_dir, "status", "-sb"],
+                                    capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
+            first_line = res_sb.stdout.split('\n')[0] if res_sb.stdout else ''
+            branch_match = re.match(r'^## (\S+?)(?:\.\.\.|\s|$)', first_line)
+            curr_branch = branch_match.group(1) if branch_match else "Detached HEAD"
+            is_ahead = "[ahead" in first_line
 
             target_raw = self.cb_targets.GetStringSelection()
             actual_target = target_raw.split(' ')[0] if ' ' in target_raw else target_raw
-            
+
             status_dict = self.engine.get_git_status(target=actual_target)
             changes = len(status_dict)
-            
+
             status_text = f"Working Branch: '{curr_branch}'\n"
             if changes > 0:
                 status_text += f"Status: {changes} changes relative to {actual_target}."
             else:
                 status_text += f"Status: Workspace identical to {actual_target}."
-                
+
             self.status_lbl.SetLabel(status_text)
 
             if hasattr(self, 'btn_commit'):
-                head_status = self.engine.get_git_status(target="HEAD")
+                # Reuse status_dict when target is HEAD; otherwise get HEAD status separately
+                if actual_target == "HEAD":
+                    head_status = status_dict
+                else:
+                    head_status = self.engine.get_git_status(target="HEAD")
                 uncommitted_changes = len(head_status) > 0
-                
+
                 commit_font = self.btn_commit.GetFont()
                 if uncommitted_changes:
                     self.btn_commit.SetBackgroundColour(wx.Colour(150, 255, 150))
@@ -308,18 +324,12 @@ class CommandCenterDialog(wx.Dialog):
                 else:
                     self.btn_commit.SetBackgroundColour(wx.Colour(230, 245, 230))
                     commit_font.SetWeight(wx.FONTWEIGHT_NORMAL)
-                
-                self.btn_commit.SetForegroundColour(wx.Colour(0, 0, 0)) # Ensure black text 
+
+                self.btn_commit.SetForegroundColour(wx.Colour(0, 0, 0))
                 self.btn_commit.SetFont(commit_font)
 
                 push_font = self.btn_push.GetFont()
-                is_ahead = False
-                
-                res_ahead = subprocess.run([self.git_cmd, "-C", self.project_dir, "status", "-sb"],
-                                           capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
-                if "[ahead" in res_ahead.stdout:
-                    is_ahead = True
-                    
+
                 if is_ahead:
                     self.btn_push.SetBackgroundColour(wx.Colour(255, 180, 100))
                     push_font.SetWeight(wx.FONTWEIGHT_BOLD)
@@ -489,10 +499,37 @@ class CommandCenterDialog(wx.Dialog):
         if not os.path.isdir(os.path.join(self.project_dir, ".git")):
             wx.MessageBox("No Git repo found.", "Error")
             return
-            
+
+        # Show stash contents before popping so the user knows what they're restoring
+        list_res = subprocess.run([self.git_cmd, "-C", self.project_dir, "stash", "list"],
+                                  capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
+        show_res = subprocess.run([self.git_cmd, "-C", self.project_dir, "stash", "show", "--stat"],
+                                  capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
+
+        stash_list = list_res.stdout.strip()
+        stash_stat = show_res.stdout.strip()
+
+        if not stash_list:
+            wx.MessageBox("No stashes found.", "Info")
+            return
+
+        preview = stash_list
+        if stash_stat:
+            preview += f"\n\nTop stash changes:\n{stash_stat}"
+
+        confirm_dlg = wx.MessageDialog(
+            self, f"{preview}\n\nPop the top stash?",
+            "Stash Contents", wx.YES_NO | wx.ICON_QUESTION
+        )
+        should_pop = confirm_dlg.ShowModal() == wx.ID_YES
+        confirm_dlg.Destroy()
+
+        if not should_pop:
+            return
+
         wx.BeginBusyCursor()
         try:
-            res = subprocess.run([self.git_cmd, "-C", self.project_dir, "stash", "pop"], 
+            res = subprocess.run([self.git_cmd, "-C", self.project_dir, "stash", "pop"],
                                  capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
             if res.returncode == 0:
                 wx.MessageBox(f"Stash popped successfully:\n{res.stdout.strip()}", "Success")
@@ -502,13 +539,23 @@ class CommandCenterDialog(wx.Dialog):
         finally:
             if wx.IsBusy(): wx.EndBusyCursor()
 
+    def _make_progress_callback(self):
+        def progress(current, total, fname):
+            self.status_lbl.SetLabel(f"Processing {current}/{total}: {fname}")
+            self.status_lbl.Refresh()
+            wx.SafeYield()
+        return progress
+
     def on_diff(self, event):
         wx.BeginBusyCursor()
         try:
             selected_target = self.cb_targets.GetStringSelection()
             run_checks = self.cb_drc.GetValue()
-            
-            diffs, summary = self.engine.render_all_diffs(show_unchanged=False, compare_target=selected_target, run_drc=run_checks)
+
+            diffs, summary = self.engine.render_all_diffs(
+                show_unchanged=False, compare_target=selected_target,
+                run_drc=run_checks, progress_callback=self._make_progress_callback()
+            )
             if not diffs:
                 wx.MessageBox(f"No local changes detected against {selected_target}.", "Info")
             else:
@@ -516,14 +563,18 @@ class CommandCenterDialog(wx.Dialog):
                 win.Show()
         finally:
             if wx.IsBusy(): wx.EndBusyCursor()
+            self.update_git_status()
 
     def on_diff_all(self, event):
         wx.BeginBusyCursor()
         try:
             selected_target = self.cb_targets.GetStringSelection()
             run_checks = self.cb_drc.GetValue()
-            
-            diffs, summary = self.engine.render_all_diffs(show_unchanged=True, compare_target=selected_target, run_drc=run_checks)
+
+            diffs, summary = self.engine.render_all_diffs(
+                show_unchanged=True, compare_target=selected_target,
+                run_drc=run_checks, progress_callback=self._make_progress_callback()
+            )
             if not diffs:
                 wx.MessageBox(f"No schematic or PCB files found to render.", "Info")
             else:
@@ -531,6 +582,7 @@ class CommandCenterDialog(wx.Dialog):
                 win.Show()
         finally:
             if wx.IsBusy(): wx.EndBusyCursor()
+            self.update_git_status()
 
     def on_force_sync(self, event):
         if not os.path.isdir(os.path.join(self.project_dir, ".git")):
@@ -556,6 +608,26 @@ class CommandCenterDialog(wx.Dialog):
                 warn_dlg.Destroy()
                 
                 if result == wx.ID_YES:
+                    # Offer a backup branch before destroying local state
+                    backup_dlg = wx.MessageDialog(
+                        self,
+                        "Would you like to save your current local state to a backup branch first?\n\n"
+                        "This lets you recover any uncommitted work after the sync.",
+                        "Create Backup Branch?",
+                        wx.YES_NO | wx.ICON_QUESTION
+                    )
+                    if backup_dlg.ShowModal() == wx.ID_YES:
+                        stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                        backup_name = f"backup_{stamp}"
+                        res_bk = subprocess.run(
+                            [self.git_cmd, "-C", self.project_dir, "branch", backup_name],
+                            capture_output=True, text=True, creationflags=CREATE_NO_WINDOW
+                        )
+                        if res_bk.returncode == 0:
+                            wx.MessageBox(f"Backup branch '{backup_name}' created.", "Backup Created")
+                        else:
+                            wx.MessageBox(f"Could not create backup branch:\n{res_bk.stderr}", "Warning", wx.ICON_WARNING)
+                    backup_dlg.Destroy()
                     self.perform_atomic_overwrite(target)
         dlg.Destroy()
 
@@ -622,7 +694,7 @@ class CommandCenterDialog(wx.Dialog):
 
         include_version = self.settings.get('include_kicad_version', True)
 
-        dlg = CommitDialog(self, changed_files, kicad_version=self.kicad_version, include_version=include_version)
+        dlg = CommitDialog(self, changed_files, status_dict=status_dict, kicad_version=self.kicad_version, include_version=include_version)
         if dlg.ShowModal() == wx.ID_OK:
             msg = dlg.get_message()
             branch = dlg.get_branch()

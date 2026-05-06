@@ -101,34 +101,49 @@ class SettingsDialog(wx.Dialog):
         return self.settings
 
 class CommitDialog(wx.Dialog):
-    def __init__(self, parent, changed_files, kicad_version="", include_version=True):
-        super().__init__(parent, title="Commit Changes", size=(500, 450))
-        
-        self.changed_files = changed_files
+    def __init__(self, parent, changed_files, status_dict=None, kicad_version="", include_version=True):
+        super().__init__(parent, title="Commit Changes", size=(500, 470))
+
+        self.changed_files = list(changed_files)
+        self.status_dict = status_dict or {}
         self.kicad_version = kicad_version
         self.include_version = include_version
-        
+
         vbox = wx.BoxSizer(wx.VERTICAL)
-        
+
         # Branch selection
         branch_box = wx.BoxSizer(wx.HORIZONTAL)
         branch_box.Add(wx.StaticText(self, label="New Branch (optional):"), flag=wx.ALIGN_CENTER_VERTICAL|wx.RIGHT, border=5)
         self.tc_branch = wx.TextCtrl(self)
         branch_box.Add(self.tc_branch, proportion=1)
         vbox.Add(branch_box, flag=wx.EXPAND | wx.ALL, border=10)
-        
+
         # Commit message
         vbox.Add(wx.StaticText(self, label="Commit Message:"), flag=wx.LEFT | wx.TOP, border=10)
         self.tc_msg = wx.TextCtrl(self, style=wx.TE_MULTILINE)
         vbox.Add(self.tc_msg, proportion=1, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=10)
-        
-        # File selection
-        vbox.Add(wx.StaticText(self, label="Select files to commit:"), flag=wx.LEFT, border=10)
-        self.clb_files = wx.CheckListBox(self, choices=self.changed_files)
+
+        # File selection header with Select All / None buttons
+        file_header = wx.BoxSizer(wx.HORIZONTAL)
+        file_header.Add(wx.StaticText(self, label="Select files to commit:"), flag=wx.ALIGN_CENTER_VERTICAL)
+        file_header.AddStretchSpacer()
+        btn_all = wx.Button(self, label="All", size=(45, -1))
+        btn_none = wx.Button(self, label="None", size=(50, -1))
+        btn_all.Bind(wx.EVT_BUTTON, lambda e: [self.clb_files.Check(i, True) for i in range(self.clb_files.GetCount())])
+        btn_none.Bind(wx.EVT_BUTTON, lambda e: [self.clb_files.Check(i, False) for i in range(self.clb_files.GetCount())])
+        file_header.Add(btn_all, flag=wx.RIGHT, border=4)
+        file_header.Add(btn_none)
+        vbox.Add(file_header, flag=wx.EXPAND | wx.LEFT | wx.RIGHT, border=10)
+
+        # Build display strings: prefix each filename with its status code
+        _status_prefix = {'M': '[M] ', 'T': '[M] ', 'A': '[+] ', '??': '[+] ', 'D': '[-] '}
+        display_files = [_status_prefix.get(self.status_dict.get(f, ''), '[ ] ') + f for f in self.changed_files]
+
+        self.clb_files = wx.CheckListBox(self, choices=display_files)
         for i in range(len(self.changed_files)):
-            self.clb_files.Check(i, True)  # Check all by default
+            self.clb_files.Check(i, True)
         vbox.Add(self.clb_files, proportion=1, flag=wx.EXPAND | wx.ALL, border=10)
-        
+
         # Buttons
         btn_sizer = wx.StdDialogButtonSizer()
         btn_ok = wx.Button(self, wx.ID_OK, label="Commit")
@@ -137,7 +152,7 @@ class CommitDialog(wx.Dialog):
         btn_sizer.AddButton(btn_cancel)
         btn_sizer.Realize()
         vbox.Add(btn_sizer, flag=wx.ALIGN_RIGHT|wx.BOTTOM|wx.RIGHT, border=10)
-        
+
         self.SetSizer(vbox)
         self.CenterOnParent()
 
@@ -146,9 +161,9 @@ class CommitDialog(wx.Dialog):
         if self.include_version and self.kicad_version and msg:
             msg += f"\n\n[KiCad Version: {self.kicad_version}]"
         return msg
-        
+
     def get_branch(self):
         return self.tc_branch.GetValue().strip()
-        
+
     def get_selected_files(self):
         return [self.changed_files[i] for i in range(self.clb_files.GetCount()) if self.clb_files.IsChecked(i)]

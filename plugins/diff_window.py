@@ -29,9 +29,9 @@ class DiffWindow:
         svg_text = re.sub(r'>\s+<', '><', svg_text)
         return svg_text.strip()
 
-    def _get_file_data(self, file_path):
+    def _get_file_data(self, file_path, skip_minify=False):
         """
-        Reads a file. If it's an SVG, returns minified raw text.
+        Reads a file. If it's an SVG, returns raw or minified text.
         Otherwise, returns a Base64 encoded Data URI (for PDFs, etc.).
         Returns tuple: (is_svg_boolean, data_string)
         """
@@ -42,8 +42,9 @@ class DiffWindow:
             if ext == "svg":
                 with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
                     raw_svg = f.read()
-                    minified_svg = self._minify_svg(raw_svg)
-                    return True, minified_svg
+                if skip_minify:
+                    return True, raw_svg
+                return True, self._minify_svg(raw_svg)
             else:
                 mime_type = "application/pdf" if ext == "pdf" else "image/png"
                 with open(file_path, "rb") as f:
@@ -71,14 +72,19 @@ class DiffWindow:
         for d in self.diffs:
             processed_visuals = {}
             for layer, paths in d.get('visuals', {}).items():
-                curr_is_svg, curr_data = self._get_file_data(paths.get('curr'))
-                old_is_svg, old_data = self._get_file_data(paths.get('old'))
+                # Read raw first so we can skip minification for identical layers
+                curr_is_svg, curr_raw = self._get_file_data(paths.get('curr'), skip_minify=True)
+                old_is_svg, old_raw = self._get_file_data(paths.get('old'), skip_minify=True)
 
-                # DEDUPLICATION ENGINE: 
+                # DEDUPLICATION ENGINE:
                 # If the layer hasn't changed at all, tell JS to reuse the 'curr' data.
                 # This cuts the file size in half for unmodified layers!
-                if curr_is_svg and old_is_svg and curr_data and old_data and curr_data == old_data:
+                if curr_is_svg and old_is_svg and curr_raw and old_raw and curr_raw == old_raw:
+                    curr_data = self._minify_svg(curr_raw)
                     old_data = "SAME_AS_CURR"
+                else:
+                    curr_data = self._minify_svg(curr_raw) if curr_is_svg else curr_raw
+                    old_data = self._minify_svg(old_raw) if old_is_svg else old_raw
 
                 processed_visuals[layer] = {
                     "curr": {"is_svg": curr_is_svg, "data": curr_data},
@@ -111,11 +117,15 @@ class DiffWindow:
         with open(template_path, 'r', encoding='utf-8') as f:
             html_content = f.read()
 
-        # Inject Python variables safely
-        html_content = html_content.replace('__COLORBLIND_CLASS__', colorblind_class)
-        html_content = html_content.replace('__TARGET_NAME__', self.target_name)
-        html_content = html_content.replace('__KICAD_VERSION__', self.kicad_version)
-        html_content = html_content.replace('__DIFF_B64_GZIP__', b64_compressed)
+        # Inject Python variables in a single pass to avoid scanning large strings multiple times
+        _replacements = {
+            '__COLORBLIND_CLASS__': colorblind_class,
+            '__TARGET_NAME__': self.target_name,
+            '__KICAD_VERSION__': self.kicad_version,
+            '__DIFF_B64_GZIP__': b64_compressed,
+        }
+        _pattern = re.compile('|'.join(re.escape(k) for k in _replacements))
+        html_content = _pattern.sub(lambda m: _replacements[m.group(0)], html_content)
 
         with open(html_path, 'w', encoding='utf-8') as f:
             f.write(html_content)

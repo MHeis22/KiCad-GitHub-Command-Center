@@ -72,12 +72,21 @@ class JLCPCBExporter:
             # 2. Generate Files
             self._generate_gerbers(temp_dir)
             self._generate_drills(temp_dir)
-            
+
+            # Verify that output files were actually created before zipping
+            generated = [f for f in os.listdir(temp_dir) if os.path.isfile(os.path.join(temp_dir, f))]
+            if not generated:
+                raise RuntimeError("Gerber export produced no output files. Check that the board has copper layers and a valid Edge.Cuts outline.")
+
             # 3. Create the ZIP archive
             zip_base_path = os.path.join(production_dir, zip_filename)
             shutil.make_archive(zip_base_path, 'zip', temp_dir)
-            
-            return f"{zip_base_path}.zip"
+
+            final_zip = f"{zip_base_path}.zip"
+            if not os.path.exists(final_zip) or os.path.getsize(final_zip) == 0:
+                raise RuntimeError(f"Gerber archive was not created or is empty: {final_zip}")
+
+            return final_zip
             
         finally:
             # 4. Clean up the temporary directory regardless of success or failure
