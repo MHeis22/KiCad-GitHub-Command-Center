@@ -100,8 +100,8 @@ class CommandCenterDialog(wx.Dialog):
         btn_diff_all = wx.Button(self.scroll_panel, label="View All Files (Including Unchanged)", size=(-1, 40))
         btn_diff_all.Bind(wx.EVT_BUTTON, self.on_diff_all)
         
-        self.cb_drc = wx.CheckBox(self.scroll_panel, label="Run DRC Checks (Shows DRC violations as diffs)")
-        self.cb_drc.SetToolTip("Executes KiCad's design rules checker and compares violations.")
+        self.cb_drc = wx.CheckBox(self.scroll_panel, label="Run DRC/ERC Checks (Shows violations as diffs)")
+        self.cb_drc.SetToolTip("Executes KiCad's design rules checker (PCB) and electrical rules checker (Schematic) and compares violations.")
         self.cb_drc.SetValue(False)
 
         sizer_review.Add(btn_diff, flag=wx.EXPAND | wx.ALL, border=5)
@@ -129,10 +129,15 @@ class CommandCenterDialog(wx.Dialog):
         stash_sizer.Add(btn_stash, proportion=1, flag=wx.RIGHT, border=2)
         stash_sizer.Add(btn_pop, proportion=1, flag=wx.LEFT, border=2)
 
+        btn_tag = wx.Button(self.scroll_panel, label="Create Version Tag (v1.0.0)", size=(-1, 40))
+        btn_tag.Bind(wx.EVT_BUTTON, self.on_create_tag)
+        btn_tag.SetToolTip("Create a semantic version tag on the current commit (e.g. v1.0.0). Remember to push tags separately.")
+
         sizer_local.Add(self.btn_commit, flag=wx.EXPAND | wx.ALL, border=5)
         sizer_local.Add(btn_switch, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=5)
         sizer_local.Add(stash_sizer, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=5)
-        
+        sizer_local.Add(btn_tag, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=5)
+
         # --- JLCPCB Constraints Enforcer ---
         btn_jlc_rules = wxbuttons.GenButton(self.scroll_panel, label="Set JLCPCB Safe Constraints (Free Tier)", size=(-1, 40))
         btn_jlc_rules.SetBackgroundColour(wx.Colour(230, 230, 250))
@@ -549,6 +554,72 @@ class CommandCenterDialog(wx.Dialog):
                 wx.MessageBox(f"Stash pop failed:\n{res.stderr.strip()}", "Git Error", wx.ICON_ERROR)
         finally:
             if wx.IsBusy(): wx.EndBusyCursor()
+
+    def on_create_tag(self, event):
+        if not os.path.isdir(os.path.join(self.project_dir, ".git")):
+            wx.MessageBox("No Git repository found.", "Error", wx.ICON_ERROR)
+            return
+
+        # Fetch existing version tags to suggest the next patch number
+        res = subprocess.run(
+            [self.git_cmd, "-C", self.project_dir, "tag", "--sort=-version:refname", "-l", "v*"],
+            capture_output=True, text=True, creationflags=CREATE_NO_WINDOW
+        )
+        tags = [t.strip() for t in res.stdout.split('\n') if t.strip()]
+
+        suggested = "v1.0.0"
+        if tags:
+            import re as _re
+            m = _re.match(r'v?(\d+)\.(\d+)\.(\d+)', tags[0])
+            if m:
+                major, minor, patch = int(m.group(1)), int(m.group(2)), int(m.group(3))
+                suggested = f"v{major}.{minor}.{patch + 1}"
+
+        existing_summary = ", ".join(tags[:5]) if tags else "None"
+        dlg = wx.TextEntryDialog(
+            self,
+            f"Enter a semantic version tag (e.g. {suggested}):\n\nRecent tags: {existing_summary}",
+            "Create Version Tag",
+            suggested
+        )
+        if dlg.ShowModal() != wx.ID_OK:
+            dlg.Destroy()
+            return
+        tag_name = dlg.GetValue().strip()
+        dlg.Destroy()
+
+        if not tag_name:
+            return
+
+        msg_dlg = wx.TextEntryDialog(
+            self,
+            "Optional annotation message (leave blank for a lightweight tag):",
+            "Tag Message",
+            f"Release {tag_name}"
+        )
+        annotation = ""
+        if msg_dlg.ShowModal() == wx.ID_OK:
+            annotation = msg_dlg.GetValue().strip()
+        msg_dlg.Destroy()
+
+        wx.BeginBusyCursor()
+        try:
+            if annotation:
+                cmd = [self.git_cmd, "-C", self.project_dir, "tag", "-a", tag_name, "-m", annotation]
+            else:
+                cmd = [self.git_cmd, "-C", self.project_dir, "tag", tag_name]
+            result = subprocess.run(cmd, capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
+            if result.returncode == 0:
+                wx.MessageBox(
+                    f"Tag '{tag_name}' created successfully.\n\n"
+                    "To share it, push tags to remote:\n  git push origin --tags",
+                    "Tag Created"
+                )
+            else:
+                wx.MessageBox(f"Tag creation failed:\n{result.stderr.strip()}", "Git Error", wx.ICON_ERROR)
+        finally:
+            if wx.IsBusy():
+                wx.EndBusyCursor()
 
     def _make_progress_callback(self):
         def progress(current, total, fname):
