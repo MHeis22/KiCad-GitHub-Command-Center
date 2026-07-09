@@ -1,9 +1,8 @@
 import os
 import re
-import sys
 import glob
 import subprocess
-from .utils import CREATE_NO_WINDOW
+from .utils import CREATE_NO_WINDOW, find_kicad_cli
 
 # kicad-cli 'pcb render' was introduced in KiCad 9.0 (dev 8.99).
 # STEP export ('pcb export step') has been available since KiCad 7.0.
@@ -41,7 +40,7 @@ class Model3DExporter:
         self.project_dir = project_dir
         self.settings = settings or {}
         self.kicad_version = kicad_version
-        self.kicad_cli = "kicad-cli.exe" if sys.platform == "win32" else "kicad-cli"
+        self.kicad_cli = find_kicad_cli()
 
     def _find_pcb(self):
         """Returns the first .kicad_pcb in the project, or None."""

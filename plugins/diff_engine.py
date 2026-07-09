@@ -6,8 +6,9 @@ import shutil
 import difflib
 import re
 import glob
+import hashlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from .utils import CREATE_NO_WINDOW
+from .utils import CREATE_NO_WINDOW, find_kicad_cli
 from .kicad_parser import (
     get_pcb_layers, get_pcb_dimensions, get_pcb_structure,
     get_sch_structure, get_bom_data, compare_logic_data, extract_todos
@@ -20,9 +21,11 @@ class DiffEngine:
         # Create a dedicated temp folder for this diff session
         self.tmp_dir = os.path.join(tempfile.gettempdir(), "kicad_git_diff")
         os.makedirs(self.tmp_dir, exist_ok=True)
-        
-        self.kicad_cli = "kicad-cli.exe" if sys.platform == "win32" else "kicad-cli"
-        self.git_cmd = "git.exe" if sys.platform == "win32" else "git"
+
+        self.kicad_cli = find_kicad_cli()
+        self.git_cmd = "git.exe" if os.name == "nt" else "git"
+        # {(file_md5, layer, is_pcb): svg_out_path} — avoids re-exporting unchanged files
+        self._svg_cache = {}
 
     def get_kicad_version(self):
         """Fetches the installed KiCad version via CLI."""
@@ -164,7 +167,7 @@ class DiffEngine:
             except OSError: pass
 
         try:
-            cmd = [self.kicad_cli, "pcb" if is_pcb else "sch", "drc" if is_pcb else "erc", "--format", "json", "--output", out_json, file_path]
+            cmd = [self.kicad_cli, "pcb", "drc", "--format", "json", "--output", out_json, file_path]
             subprocess.run(cmd, capture_output=True, timeout=120, cwd=self.project_dir, creationflags=CREATE_NO_WINDOW)
             
             if os.path.exists(out_json):
@@ -202,6 +205,16 @@ class DiffEngine:
             return [f"Error running check: {e}"]
         return []
 
+    def _file_hash(self, path):
+        h = hashlib.md5()
+        try:
+            with open(path, 'rb') as f:
+                for chunk in iter(lambda: f.read(65536), b''):
+                    h.update(chunk)
+        except OSError:
+            return None
+        return h.hexdigest()
+
     def _find_correct_svg(self, out_path, expected_base_name):
         if os.path.isdir(out_path):
             expected = os.path.join(out_path, f"{expected_base_name}.svg")
@@ -225,7 +238,19 @@ class DiffEngine:
         try:
             if task['type'] == 'svg':
                 out_path = task['out_path']
-                
+
+                # Cache check: skip CLI export if this exact file+layer was already rendered
+                cache_key = None
+                file_path = task['file_path']
+                if os.path.exists(file_path):
+                    fhash = self._file_hash(file_path)
+                    if fhash:
+                        cache_key = (fhash, task['layer'], task['is_pcb'])
+                        cached = self._svg_cache.get(cache_key)
+                        if cached and os.path.exists(cached):
+                            task['result'] = cached
+                            return task
+
                 # Cleanup existing tmp outputs to prevent overlaps
                 for old_temp in glob.glob(out_path.replace(".svg", "*.svg")):
                     try:
@@ -235,12 +260,14 @@ class DiffEngine:
 
                 subprocess.run(task['cli_args'] + [task['file_path'], "--output", out_path],
                                capture_output=True, timeout=120, cwd=self.project_dir, creationflags=CREATE_NO_WINDOW)
-                
+
                 if not task['is_pcb']:
                     out_path = self._find_correct_svg(out_path, task['base_name'])
 
                 if os.path.exists(out_path) and os.path.getsize(out_path) > 0 and not os.path.isdir(out_path):
                     task['result'] = out_path
+                    if cache_key:
+                        self._svg_cache[cache_key] = out_path
                 else:
                     task['result'] = None
                     
@@ -257,9 +284,10 @@ class DiffEngine:
         
         return task
 
-    def render_all_diffs(self, show_unchanged=False, compare_target="HEAD", run_drc=False):
+    def render_all_diffs(self, show_unchanged=False, compare_target="HEAD", run_drc=False, progress_callback=None):
         """
         Scans for .kicad_pcb and .kicad_sch. Exports visual, logical files, and optionally DRC.
+        progress_callback(current, total, filename) is called before each file is processed.
         """
         actual_target = compare_target.split(' ')[0] if ' ' in compare_target else compare_target
         git_status = self.get_git_status(target=actual_target)
@@ -276,8 +304,11 @@ class DiffEngine:
         
         diffs = []
         summary_lines = []
-        
-        for fname in target_files:
+        total_files = len(target_files)
+
+        for file_idx, fname in enumerate(target_files):
+            if progress_callback:
+                progress_callback(file_idx + 1, total_files, fname)
             file_path = os.path.join(self.project_dir, fname)
             status_code = git_status.get(fname)
             
@@ -369,8 +400,8 @@ class DiffEngine:
                         old_net = os.path.join(self.tmp_dir, f"old_{safe_name}.net")
                         tasks.append({'type': 'netlist', 'version': 'old', 'cli_args': [self.kicad_cli, "sch", "export", "netlist", old_board_tmp, "--output", old_net], 'out_path': old_net})
 
-                # DRC Tasks
-                if run_drc:
+                # DRC Tasks (PCB only)
+                if run_drc and is_pcb:
                     if status_text != "Deleted":
                         tasks.append({'type': 'drc', 'version': 'curr', 'file_path': file_path, 'is_pcb': is_pcb})
                     if has_old:

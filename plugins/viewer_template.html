@@ -8,10 +8,10 @@
         :root {
             --bg-main: #1e1e1e;
             --bg-sidebar: #252526;
-            --bg-header: #2d2d30;
-            --border-color: #333;
-            --text-main: #eee;
-            --text-muted: #aaa;
+            --bg-header: #333333;
+            --border-color: #444444;
+            --text-main: #eeeeee;
+            --text-muted: #aaaaaa;
             --bg-hover: #2a2d2e;
             --bg-active: #37373d;
             --pcb-bg: #0a0a0a;
@@ -19,15 +19,17 @@
             --diff-add: rgba(76, 175, 80, 0.15);
             --diff-del: rgba(244, 67, 54, 0.15);
             --diff-mod: rgba(255, 152, 0, 0.15);
+            --accent: #007acc;
+            --accent-hover: #005999;
         }
         
         body.light-theme {
             --bg-main: #f5f5f5;
             --bg-sidebar: #eaeaea;
             --bg-header: #dcdcdc;
-            --border-color: #ccc;
-            --text-main: #222;
-            --text-muted: #666;
+            --border-color: #cccccc;
+            --text-main: #222222;
+            --text-muted: #666666;
             --bg-hover: #dfdfdf;
             --bg-active: #cce4f7;
             --pcb-bg: #ffffff; 
@@ -51,25 +53,18 @@
         body.colorblind-theme .diff-add { color: #2196F3; }
         body.colorblind-theme .diff-del { color: #FF9800; }
         body.colorblind-theme .diff-mod { color: #9C27B0; }
-        
         body.colorblind-theme .color-new { color: #2196F3 !important; }
         body.colorblind-theme .color-old { color: #FF9800 !important; }
         body.colorblind-theme .color-err { color: #FF9800 !important; }
-        
         body.colorblind-theme .health-err { color: #FF9800; }
         body.colorblind-theme .health-warn { color: #9C27B0; }
-        
         body.colorblind-theme .todo-new { border-left-color: #2196F3 !important; }
         body.colorblind-theme .todo-old { border-left-color: #FF9800 !important; }
         body.colorblind-theme .todo-err { border-left-color: #FF9800 !important; }
-
         body.colorblind-theme .bom-table del { color: #FF9800; }
         body.colorblind-theme .bom-table b { color: #2196F3; }
-
         body.colorblind-theme .label-old { background: rgba(255, 152, 0, 0.8) !important; }
         body.colorblind-theme .label-new { background: rgba(33, 150, 243, 0.8) !important; }
-
-        /* Tints: Old is Orange, New is Blue */
         body.colorblind-theme .diff-old-tint { filter: grayscale(100%) sepia(100%) saturate(500%) hue-rotate(10deg) brightness(1.2) contrast(1.2) !important; }
         body.colorblind-theme .diff-new-tint { filter: grayscale(100%) sepia(100%) saturate(500%) hue-rotate(190deg) brightness(1.2) contrast(1.2) !important; }
         body.colorblind-theme .sch-diff-old { filter: invert(1) sepia(100%) saturate(500%) hue-rotate(-20deg) brightness(0.9) !important; }
@@ -92,8 +87,6 @@
         .label-old { background: rgba(244, 67, 54, 0.8); }
         .label-new { background: rgba(76, 175, 80, 0.8); }
 
-        #version-watermark { position: fixed; bottom: 15px; right: 20px; font-size: 15px; color: var(--text-muted); opacity: 0.6; z-index: 1000; pointer-events: none; font-family: 'Consolas', 'Courier New', monospace; }
-
         .sch-overlay-mode { opacity: 1.0; mix-blend-mode: screen; z-index: 10; background: transparent; }
         .sch-diff-old { filter: invert(1) sepia(100%) saturate(500%) hue-rotate(-50deg) brightness(0.9) !important; mix-blend-mode: normal; }
         .sch-diff-new { filter: invert(1) sepia(100%) saturate(500%) hue-rotate(80deg) brightness(0.9) !important; mix-blend-mode: normal; }
@@ -102,75 +95,79 @@
 
         .overlay-active { background: var(--pcb-bg) !important; }
         .overlay-active .board-viewer { background: transparent !important; transition: none !important; }
-        
         body:not(.light-theme) .overlay-blend-mode { mix-blend-mode: screen; opacity: 1.0; z-index: 10; background: transparent; }
         body.light-theme .overlay-blend-mode { mix-blend-mode: multiply; opacity: 1.0; z-index: 10; background: transparent; }
         
         .diff-old-tint { filter: grayscale(100%) sepia(100%) saturate(500%) hue-rotate(86deg) brightness(1.2) contrast(1.2) !important; mix-blend-mode: normal; }
         .diff-new-tint { filter: grayscale(100%) sepia(100%) saturate(500%) hue-rotate(346deg) brightness(1.2) contrast(1.2) !important; mix-blend-mode: normal; }
 
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: var(--bg-main); color: var(--text-main); margin: 0; display: flex; height: 100vh; overflow: hidden; transition: background 0.3s, color 0.3s; overscroll-behavior: none; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: var(--bg-main); color: var(--text-main); margin: 0; display: flex; height: 100vh; overflow: hidden; transition: background 0.3s, color 0.3s; overscroll-behavior: none; }
         
+        /* --- Sidebar --- */
         #sidebar { width: 280px; background: var(--bg-sidebar); border-right: 1px solid var(--border-color); display: flex; flex-direction: column; transition: 0.3s; flex-shrink: 0; }
-        .sidebar-header { padding: 15px; background: var(--bg-header); border-bottom: 1px solid var(--border-color); font-weight: bold; transition: 0.3s; }
+        .sidebar-header { padding: 12px 15px; background: var(--bg-sidebar); border-bottom: 1px solid var(--border-color); font-weight: 600; font-size: 14px; transition: 0.3s; display: flex; align-items: center; justify-content: space-between; }
+        #btn-changed-only { font-size: 11px; padding: 3px 8px; background: var(--bg-main); color: var(--text-muted); border: 1px solid var(--border-color); border-radius: 4px; cursor: pointer; white-space: nowrap; font-weight: 600; }
+        #btn-changed-only.active { background: var(--accent); color: white; border-color: var(--accent); }
         .file-list { flex: 1; overflow-y: auto; list-style: none; padding: 0; margin: 0; }
         .file-item { padding: 12px 15px; border-bottom: 1px solid var(--border-color); cursor: pointer; transition: background 0.2s; }
         .file-item:hover { background: var(--bg-hover); }
-        .file-item.active { background: var(--bg-active); border-left: 4px solid #007acc; }
-        .file-name { font-weight: bold; margin-bottom: 4px; word-break: break-all; }
+        .file-item.active { background: var(--bg-active); border-left: 4px solid var(--accent); }
+        .file-name { font-weight: 600; font-size: 13px; margin-bottom: 4px; word-break: break-all; }
         .file-status { font-size: 0.85em; color: var(--text-muted); }
         
         #main-content { flex: 1; display: flex; flex-direction: column; background: var(--bg-main); transition: 0.3s; overflow: hidden; }
-        #topbar { padding: 15px; background: var(--bg-sidebar); border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; transition: 0.3s; }
         
-        .summary-box { padding: 10px 15px; background: var(--bg-header); border-radius: 6px; font-size: 0.9em; max-width: 35%; max-height: 60px; overflow-y: auto; border: 1px solid var(--border-color); transition: 0.3s; }
+        /* --- Clean Header & Global Actions --- */
+        .app-header { display: flex; justify-content: space-between; align-items: center; padding: 12px 20px; background: var(--bg-sidebar); }
+        .breadcrumb { font-size: 15px; display: flex; align-items: center; }
+        .breadcrumb .bc-filename { font-weight: 600; color: var(--text-main); }
+        .breadcrumb .bc-separator { color: var(--text-muted); margin: 0 10px; font-size: 12px; }
+        .breadcrumb .bc-target { color: var(--text-muted); font-size: 14px; }
+        .breadcrumb .bc-target .target-name-val { color: #00bcd4; font-weight: bold; }
         
-        .controls-wrapper { display: flex; flex-direction: column; align-items: flex-end; gap: 10px; }
-        
-        .selection-row { display: flex; align-items: center; gap: 12px; }
-        .layer-selector { display: flex; align-items: center; gap: 8px; background: var(--bg-header); padding: 4px 10px; border-radius: 4px; border: 1px solid var(--border-color); font-size: 13px; }
-        select { background: var(--bg-main); color: var(--text-main); border: 1px solid var(--border-color); padding: 3px 6px; border-radius: 3px; cursor: pointer; font-size: 13px; max-width: 150px; }
-        select:focus { outline: none; border-color: #007acc; }
+        .global-actions { display: flex; gap: 8px; }
+        .icon-btn { background: transparent; border: 1px solid transparent; color: var(--text-muted); border-radius: 6px; padding: 6px; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: 0.2s; }
+        .icon-btn:hover { background: var(--bg-hover); color: var(--text-main); border-color: var(--border-color); }
+        .icon-btn.btn-active { background: var(--accent); color: white; border-color: var(--accent); }
 
-        .checkbox-label { display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 13px; user-select: none; }
-        .checkbox-label input { cursor: pointer; }
+        /* --- Real Tabs --- */
+        .tabs-container { display: flex; background: var(--bg-sidebar); padding: 0 16px; border-bottom: 1px solid var(--border-color); gap: 4px; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+        .tabs-container::-webkit-scrollbar { display: none; }
+        .tab { padding: 10px 20px; font-size: 13px; font-weight: 600; color: var(--text-muted); cursor: pointer; border: 1px solid transparent; border-bottom: none; border-radius: 6px 6px 0 0; transition: 0.2s; margin-bottom: -1px; white-space: nowrap; }
+        .tab:hover:not(.active) { color: var(--text-main); background: var(--bg-hover); }
+        .tab.active { color: var(--accent); background: var(--bg-main); border-color: var(--border-color); border-bottom: 1px solid var(--bg-main); }
 
-        .view-toggle { display: flex; gap: 5px; }
-        .view-btn { padding: 6px 12px; font-size: 13px; font-weight: bold; cursor: pointer; background: var(--bg-main); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 4px; transition: 0.2s; }
-        .view-btn.active { background: #007acc; color: white; border-color: #007acc; }
-        .view-btn:hover:not(.active) { background: var(--bg-hover); }
+        /* --- Contextual Toolbar (PCB specific) --- */
+        .visual-toolbar { display: flex; justify-content: space-between; align-items: center; padding: 10px 20px; background: var(--bg-header); border-bottom: 1px solid var(--border-color); flex-shrink: 0; gap: 15px; }
+        .toolbar-left, .toolbar-right { display: flex; align-items: center; gap: 15px; flex-wrap: wrap; }
         
-        .controls { display: flex; align-items: center; gap: 10px; }
-        button { padding: 8px 16px; font-size: 13px; font-weight: bold; cursor: pointer; background: #007acc; color: white; border: none; border-radius: 4px; transition: 0.2s; }
-        button:hover { background: #005999; }
-        button.btn-secondary { background: #555; }
-        button.btn-secondary:hover { background: #777; }
+        .layer-selector { display: flex; align-items: center; gap: 8px; background: var(--bg-main); padding: 4px 10px; border-radius: 6px; border: 1px solid var(--border-color); font-size: 13px; font-weight: 600; }
+        select { background: transparent; color: var(--text-main); border: none; outline: none; cursor: pointer; font-size: 13px; font-weight: 600; max-width: 130px; }
         
-        /* Highlighted toggle button state */
-        button.btn-active {
-            background: #007acc !important;
-            color: white !important;
-            border-color: #007acc !important;
-            box-shadow: inset 0 2px 4px rgba(0,0,0,0.2);
-        }
+        .toggle-label { display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 13px; font-weight: 500; color: var(--text-main); user-select: none; }
+        .toggle-label input { cursor: pointer; accent-color: var(--accent); width: 14px; height: 14px; margin: 0; }
 
-        .status-indicator { font-size: 14px; color: var(--text-muted); min-width: 220px; text-align: right; }
-        
+        .btn-secondary { padding: 6px 12px; font-size: 13px; font-weight: 600; cursor: pointer; background: var(--bg-sidebar); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 6px; transition: 0.2s; }
+        .btn-secondary:hover { background: var(--bg-hover); }
+
+        /* Segmented Control */
+        .segmented-control { display: flex; border: 1px solid var(--border-color); border-radius: 6px; overflow: hidden; background: var(--bg-main); }
+        .segmented-control button { background: transparent; border: none; border-right: 1px solid var(--border-color); padding: 6px 14px; font-size: 13px; font-weight: 600; color: var(--text-muted); cursor: pointer; transition: 0.2s; }
+        .segmented-control button:last-child { border-right: none; }
+        .segmented-control button:hover:not(.btn-active) { background: var(--bg-hover); color: var(--text-main); }
+        .segmented-control button.btn-active { background: var(--accent); color: white; }
+
+        /* --- Viewer and Panes --- */
         #viewer-container { flex: 1; display: flex; justify-content: center; align-items: center; overflow: hidden; position: relative; touch-action: none; background: var(--bg-main); }
         #viewer-container.split-active { flex-direction: row; }
-        
         .viewer-pane { flex: 1; position: relative; height: 100%; width: 100%; overflow: hidden; display: flex; justify-content: center; align-items: center; }
         #pane-right { border-left: 2px solid var(--border-color); }
-        
         .viewer-absolute { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; justify-content: center; align-items: center; pointer-events: none; }
         .img-transform-wrapper { width: 100%; height: 100%; display: flex; justify-content: center; align-items: center; transform-origin: 0 0; position: absolute; }
         
         .board-viewer { width: 100%; height: 100%; border: 1px solid #444; background: var(--pcb-bg); border-radius: 4px; box-shadow: 0 4px 25px rgba(0,0,0,0.8); transition: background 0.3s; }
         .pdf-viewer { position: absolute; width: calc(100% - 40px); height: calc(100% - 40px); pointer-events: auto; }
-        
         img.board-viewer { position: absolute; width: 100%; height: 100%; object-fit: contain; pointer-events: none; filter: contrast(1.15) saturate(1.2); } 
-        
-        /* X-Axis Flip Utility */
         .board-viewer.flipped { transform: scaleX(-1) !important; }
         
         .hidden { display: none !important; }
@@ -181,6 +178,7 @@
         .mask-overlay { z-index: 18; opacity: 0.75; background: transparent; mix-blend-mode: screen; filter: brightness(0.95) contrast(1.1); }
         .paste-overlay { z-index: 19; opacity: 0.75; background: transparent; mix-blend-mode: screen; filter: brightness(0.95) contrast(1.1); }
 
+        /* --- Text, Health, BOM Containers --- */
         #text-diff-container, #todos-container, #health-container, #bom-container { flex: 1; padding: 20px; overflow-y: auto; background: var(--diff-bg); font-family: 'Consolas', 'Courier New', monospace; font-size: 13px; white-space: pre-wrap; line-height: 1.5; transition: 0.3s; }
         .diff-line { padding: 0 5px; border-radius: 2px; }
         .diff-header { color: var(--text-muted); font-weight: bold; margin-top: 10px; }
@@ -190,7 +188,7 @@
         .diff-chunk { color: #00bcd4; font-weight: bold; }
         .diff-normal { color: var(--text-main); }
 
-        #bom-container { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; white-space: normal; padding: 20px; }
+        #bom-container { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Tahoma, sans-serif; white-space: normal; padding: 20px; }
         .bom-table-wrapper { height: 100%; overflow: auto; border: 1px solid var(--border-color); border-radius: 6px; background: var(--bg-sidebar); }
         .bom-table { width: 100%; border-collapse: collapse; text-align: left; }
         .bom-table th, .bom-table td { padding: 10px 14px; border-bottom: 1px solid var(--border-color); font-size: 13px; vertical-align: top; }
@@ -206,39 +204,25 @@
         .todos-column { flex: 1; display: flex; flex-direction: column; background: var(--bg-sidebar); border-radius: 6px; border: 1px solid var(--border-color); transition: 0.3s; }
         .todos-header { padding: 12px 15px; background: var(--bg-header); border-bottom: 1px solid var(--border-color); font-weight: bold; font-size: 14px; border-radius: 6px 6px 0 0; transition: 0.3s; }
         .todo-list { list-style: none; padding: 15px; margin: 0; overflow-y: auto; flex: 1; }
-        .todo-item { padding: 12px 15px; margin-bottom: 10px; border-radius: 4px; background: var(--bg-header); border-left: 4px solid var(--text-muted); font-family: 'Segoe UI', sans-serif; box-shadow: 0 2px 4px rgba(0,0,0,0.2); transition: 0.3s; word-wrap: break-word; white-space: normal; }
+        .todo-item { padding: 12px 15px; margin-bottom: 10px; border-radius: 4px; background: var(--bg-header); border-left: 4px solid var(--text-muted); font-family: -apple-system, sans-serif; box-shadow: 0 2px 4px rgba(0,0,0,0.2); transition: 0.3s; word-wrap: break-word; white-space: normal; }
         .todo-empty { color: var(--text-muted); font-style: italic; padding: 10px 0; }
         .no-data-msg { color: var(--text-muted); font-style: italic; font-size: 1.2em; position: absolute; z-index: 100; text-align: center; }
 
-        @media (max-width: 768px) {
-            body { display: block; height: auto; overflow-y: auto; }
-            #main-content { display: block; height: auto; overflow: visible; }
-            #sidebar { width: 100%; height: 140px; flex-shrink: 0; border-right: none; border-bottom: 1px solid var(--border-color); }
-            #topbar { flex-direction: column; align-items: flex-start; gap: 10px; padding: 10px; flex-shrink: 0; }
-            .summary-box { max-width: 100%; width: 100%; max-height: max-content; box-sizing: border-box; }
-            .controls-wrapper { width: 100%; align-items: flex-start; gap: 8px; }
-            .selection-row { flex-wrap: wrap; gap: 8px; width: 100%; }
-            .view-toggle { flex-wrap: wrap; gap: 4px; width: 100%; }
-            .view-btn { flex: 1 1 auto; text-align: center; padding: 8px; }
-            .controls { flex-wrap: wrap; justify-content: flex-start; width: 100%; gap: 6px; }
-            .status-indicator { text-align: left; min-width: auto; width: 100%; margin-bottom: 4px; font-weight: bold; }
-            button { padding: 10px; flex: 1 1 auto; }
-            .todos-wrapper { flex-direction: column; height: auto; }
-            .todos-column { min-height: 250px; }
-            #viewer-container { height: 75vh; min-height: 450px; flex: none; }
-            #text-diff-container, #todos-container, #health-container, #bom-container { min-height: 60vh; flex: none; }
-            .layer-selector { flex: 1 1 auto; justify-content: space-between; }
-        }
-
         /* --- Filter Bar --- */
-        #filter-bar { display: none; flex-shrink: 0; align-items: center; gap: 12px; padding: 7px 20px; background: var(--bg-sidebar); border-bottom: 1px solid var(--border-color); transition: background 0.3s; }
+        #filter-bar { display: none; flex-shrink: 0; align-items: center; gap: 12px; padding: 10px 20px; background: var(--bg-sidebar); border-bottom: 1px solid var(--border-color); transition: background 0.3s; }
         #filter-bar.visible { display: flex; }
-        #filter-input { background: var(--bg-main); color: var(--text-main); border: 1px solid var(--border-color); padding: 5px 12px; border-radius: 4px; font-size: 13px; width: 280px; font-family: inherit; transition: border-color 0.2s; }
-        #filter-input:focus { outline: none; border-color: #007acc; }
+        #filter-input { background: var(--bg-main); color: var(--text-main); border: 1px solid var(--border-color); padding: 6px 12px; border-radius: 6px; font-size: 13px; width: 280px; font-family: inherit; transition: border-color 0.2s; outline: none; }
+        #filter-input:focus { border-color: var(--accent); }
         #filter-input::placeholder { color: var(--text-muted); }
         #filter-count { font-size: 12px; color: var(--text-muted); font-style: italic; min-width: 100px; }
-        #filter-clear { font-size: 12px; cursor: pointer; color: var(--text-muted); background: none; border: none; padding: 2px 6px; border-radius: 3px; }
+        #filter-clear { font-size: 12px; cursor: pointer; color: var(--text-muted); background: none; border: none; padding: 4px 8px; border-radius: 4px; }
         #filter-clear:hover { color: var(--text-main); background: var(--bg-hover); }
+
+        /* --- Footer Status Bar --- */
+        .status-bar { display: flex; justify-content: space-between; align-items: center; padding: 8px 20px; background: var(--bg-sidebar); border-top: 1px solid var(--border-color); font-size: 12px; color: var(--text-muted); flex-shrink: 0; }
+        .status-left, .status-right { display: flex; align-items: center; gap: 15px; }
+        .dim-box { font-family: monospace; font-weight: bold; color: var(--text-main); }
+        #version-watermark { font-family: monospace; opacity: 0.6; }
 
         /* --- Shortcut Help Overlay --- */
         #shortcut-help { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.65); z-index: 9999; justify-content: center; align-items: center; }
@@ -249,86 +233,117 @@
         #shortcut-panel h3 .sc-close:hover { color: var(--text-main); }
         .sc-row { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-bottom: 1px solid rgba(128,128,128,0.1); font-size: 13px; }
         .sc-row:last-child { border-bottom: none; }
-        .sc-key { background: var(--bg-header); border: 1px solid var(--border-color); border-radius: 3px; padding: 1px 8px; font-family: monospace; font-size: 12px; color: #00bcd4; white-space: nowrap; }
+        .sc-key { background: var(--bg-header); border: 1px solid var(--border-color); border-radius: 4px; padding: 2px 8px; font-family: monospace; font-size: 12px; color: #00bcd4; white-space: nowrap; }
         .sc-desc { color: var(--text-main); }
         .sc-section { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.06em; padding: 10px 0 4px; }
+
+        @media (max-width: 768px) {
+            body { display: block; height: auto; overflow-y: auto; }
+            #main-content { display: block; height: auto; overflow: visible; }
+            #sidebar { width: 100%; height: 160px; flex-shrink: 0; border-right: none; border-bottom: 1px solid var(--border-color); }
+            .app-header { flex-direction: column; align-items: flex-start; gap: 10px; }
+            .visual-toolbar { flex-direction: column; align-items: flex-start; gap: 10px; }
+            .toolbar-left, .toolbar-right { width: 100%; justify-content: space-between; }
+            .todos-wrapper { flex-direction: column; height: auto; }
+            .todos-column { min-height: 250px; }
+            #viewer-container { height: 75vh; min-height: 450px; flex: none; }
+            #text-diff-container, #todos-container, #health-container, #bom-container { min-height: 60vh; flex: none; }
+        }
     </style>
 </head>
 <body class="__COLORBLIND_CLASS__">
 
+    <!-- Sidebar -->
     <div id="sidebar">
-        <div class="sidebar-header">Project Files</div>
+        <div class="sidebar-header">
+            <span>Project Files</span>
+            <button id="btn-changed-only" onclick="toggleChangedOnly()" title="Show only files with changes">Changed Only</button>
+        </div>
         <ul class="file-list" id="file-list"></ul>
     </div>
 
+    <!-- Main Content -->
     <div id="main-content">
-        <div id="topbar">
-            <div class="summary-box">
-                <strong>Current Diff:</strong><br>
-                Comparing Local against: <span style="color:#00bcd4; font-weight:bold;">__TARGET_NAME__</span>
+        
+        <!-- Top App Header -->
+        <header class="app-header">
+            <div class="breadcrumb">
+                <span id="bc-filename" class="bc-filename">KiCad</span>
+                <span class="bc-separator">/</span>
+                <span class="bc-target">Comparing Local ↔ <span class="target-name-val">__TARGET_NAME__</span></span>
             </div>
             
-            <div class="controls-wrapper">
-                <div class="selection-row">
-                    <button class="btn-secondary" onclick="toggleTheme()" title="Shortcut: T" id="btn-theme">Toggle Theme</button>
-                    <button class="btn-secondary" onclick="toggleColorblind()" title="Shortcut: C" id="btn-colorblind">Colorblind</button>
-                    <button class="btn-secondary" onclick="saveReport()">Save Report</button>
-                    <button class="btn-secondary" onclick="toggleHelp()" title="Keyboard Shortcuts (?)">?</button>
-                    
-                    <label id="flip-toggle-cont" class="checkbox-label hidden" title="Flip Board X-Axis (Hotkey: F)">
-                        <input type="checkbox" id="flip-checkbox" onchange="toggleFlip(this.checked)"> Flip (F)
-                    </label>
-
-                    <label id="silk-toggle-cont" class="checkbox-label hidden">
-                        <input type="checkbox" id="silk-checkbox" onchange="toggleSilk(this.checked)" checked> Show Silk
-                    </label>
-
-                    <label id="mask-paste-toggle-cont" class="checkbox-label hidden">
-                        <input type="checkbox" id="mask-paste-checkbox" onchange="toggleMaskPaste(this.checked)" checked> Show Mask/Paste
-                    </label>
-
-                    <div id="layer-container" class="layer-selector hidden">
-                        <span>L:</span>
-                        <select id="layer-dropdown" onchange="changeLayer(this.value, 'left')"></select>
-                        <span id="right-layer-label" class="hidden" style="margin-left: 5px;">R:</span>
-                        <select id="layer-dropdown-right" class="hidden" onchange="changeLayer(this.value, 'right')"></select>
-                    </div>
-
-                    <div id="dim-container" class="layer-selector hidden" style="color: var(--text-main); font-weight: bold; font-family: monospace;"></div>
-
-                    <div class="view-toggle" id="view-toggles">
-                        <button class="view-btn active" id="tab-visual" onclick="switchTab('visual')">Visual View</button>
-                        <button class="view-btn" id="tab-health" onclick="switchTab('health')">DRC</button>
-                        <button class="view-btn" id="tab-todos" onclick="switchTab('todos')">TODOs</button>
-                        <button class="view-btn" id="tab-pcb-logic" onclick="switchTab('pcb-logic')">Logic</button>
-                        <button class="view-btn" id="tab-netlist" onclick="switchTab('netlist')">Netlist</button>
-                        <button class="view-btn" id="tab-bom" onclick="switchTab('bom')">BOM</button>
-                    </div>
-                </div>
-                
-                <div class="controls">
-                    <div class="status-indicator" id="status-text">Decompressing data...</div>
-                    <button onclick="toggleSplit()" id="btn-toggle-split" class="hidden btn-secondary">Split View</button>
-                    <button onclick="toggleSwipe()" id="btn-toggle-swipe" class="hidden btn-secondary">Swipe</button>
-                    <button onclick="toggleOverlay()" id="btn-toggle-overlay" class="hidden btn-secondary">Overlay</button>
-                    <button onclick="toggleDiff()" id="btn-toggle-diff" class="hidden">Toggle (Space)</button>
-                    <button onclick="resetTransform()" id="reset-btn" class="hidden btn-secondary">Reset Zoom</button>
-                </div>
+            <div class="global-actions">
+                <button class="icon-btn" onclick="toggleTheme()" title="Toggle Theme (T)" id="btn-theme">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
+                </button>
+                <button class="icon-btn" onclick="toggleColorblind()" title="Colorblind Mode (C)" id="btn-colorblind">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
+                </button>
+                <button class="icon-btn" onclick="saveReport()" title="Save HTML Report">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path><polyline points="17 21 17 13 7 13 7 21"></polyline><polyline points="7 3 7 8 15 8"></polyline></svg>
+                </button>
+                <button class="icon-btn" onclick="toggleHelp()" title="Keyboard Shortcuts (?)">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"></path><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
+                </button>
             </div>
+        </header>
+
+        <!-- Real Tabs -->
+        <div class="tabs-container" id="view-toggles">
+            <div class="tab active" id="tab-visual" onclick="switchTab('visual')">Visual View</div>
+            <div class="tab" id="tab-health" onclick="switchTab('health')">DRC</div>
+            <div class="tab" id="tab-todos" onclick="switchTab('todos')">TODOs</div>
+            <div class="tab" id="tab-pcb-logic" onclick="switchTab('pcb-logic')">Logic</div>
+            <div class="tab" id="tab-netlist" onclick="switchTab('netlist')">Netlist</div>
+            <div class="tab" id="tab-bom" onclick="switchTab('bom')">BOM</div>
         </div>
-        
+
+        <!-- Filter Bar (Hidden by default) -->
         <div id="filter-bar">
-            <span style="font-size:13px; color:var(--text-muted);">Filter:</span>
-            <input type="text" id="filter-input" placeholder="Search…" oninput="applyFilter()" autocomplete="off" spellcheck="false" />
+            <span style="font-size:13px; color:var(--text-muted); font-weight: 600;">Filter:</span>
+            <input type="text" id="filter-input" placeholder="Search components, issues..." oninput="applyFilter()" autocomplete="off" spellcheck="false" />
             <button id="filter-clear" onclick="clearFilter()" title="Clear filter">✕ Clear</button>
             <span id="filter-count"></span>
         </div>
 
+        <!-- Contextual Toolbar (PCB Visual Settings) -->
+        <div class="visual-toolbar" id="visual-toolbar">
+            <div class="toolbar-left">
+                <div id="layer-container" class="layer-selector hidden">
+                    <span>L:</span>
+                    <select id="layer-dropdown" onchange="changeLayer(this.value, 'left')"></select>
+                    <span id="right-layer-label" class="hidden" style="margin-left: 5px; color: var(--text-muted);">R:</span>
+                    <select id="layer-dropdown-right" class="hidden" onchange="changeLayer(this.value, 'right')"></select>
+                </div>
+                
+                <label id="silk-toggle-cont" class="toggle-label hidden">
+                    <input type="checkbox" id="silk-checkbox" onchange="toggleSilk(this.checked)" checked> Silk
+                </label>
+                <label id="mask-paste-toggle-cont" class="toggle-label hidden">
+                    <input type="checkbox" id="mask-paste-checkbox" onchange="toggleMaskPaste(this.checked)" checked> Mask/Paste
+                </label>
+                <label id="flip-toggle-cont" class="toggle-label hidden" title="Flip Board X-Axis (Hotkey: F)">
+                    <input type="checkbox" id="flip-checkbox" onchange="toggleFlip(this.checked)"> Flip
+                </label>
+            </div>
+            
+            <div class="toolbar-right">
+                <button onclick="resetTransform()" id="reset-btn" class="hidden btn-secondary" title="Reset Zoom">🔍 Zoom Fit</button>
+                <div class="segmented-control">
+                    <button onclick="toggleDiff()" id="btn-toggle-diff" class="hidden" title="Toggle Target Version (Space)">Toggle</button>
+                    <button onclick="toggleOverlay()" id="btn-toggle-overlay" class="hidden" title="Overlay Mode (O)">Overlay</button>
+                    <button onclick="toggleSwipe()" id="btn-toggle-swipe" class="hidden" title="Swipe Mode (W)">Swipe</button>
+                    <button onclick="toggleSplit()" id="btn-toggle-split" class="hidden" title="Split View (V)">Split</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Core Content Viewers -->
         <div id="viewer-container">
             <p id="no-selection" class="no-data-msg">No file selected.</p>
             <p id="no-old-msg" class="no-data-msg hidden">No data found in <span class="target-name-val"></span> for this layer.</p>
             
-            <!-- Floating Swipe Labels -->
             <div id="swipe-labels" class="hidden">
                 <div class="swipe-label label-new">New (Local)</div>
                 <div class="swipe-label label-old">Old (Target)</div>
@@ -398,11 +413,20 @@
         <div id="todos-container" class="hidden"></div>
         <div id="health-container" class="hidden"></div>
         
-        <div id="version-watermark">__KICAD_VERSION__</div>
+        <!-- Fixed Status Footer -->
+        <footer class="status-bar">
+            <div class="status-left">
+                <span id="status-text">Decompressing data...</span>
+            </div>
+            <div class="status-right">
+                <div id="dim-container" class="dim-box hidden"></div>
+                <span id="version-watermark">__KICAD_VERSION__</span>
+            </div>
+        </footer>
     </div>
 
     <script>
-        let diffData = []; // Will be populated via DecompressionStream
+        let diffData = []; 
         const targetName = "__TARGET_NAME__";
         let activeIndex = -1;
         
@@ -412,6 +436,7 @@
         let splitMode = false;
         let flipBoard = false;
         let swipePos = 50;
+        let showChangedOnly = false;
         
         let currentTab = 'visual'; 
         let currentLayer = 'Default';
@@ -480,7 +505,7 @@
         function resolveUrl(vObj, currObj, _depth = 0) {
             if (!vObj || !vObj.data) return "";
             if (vObj.data === "SAME_AS_CURR") {
-                if (_depth > 0) return ""; // prevent infinite recursion on circular SAME_AS_CURR
+                if (_depth > 0) return ""; 
                 return resolveUrl(currObj, null, _depth + 1);
             }
             if (vObj.urlCache) return vObj.urlCache;
@@ -494,7 +519,7 @@
             return vObj.urlCache;
         }
 
-        // === ZOOM AND PAN LOGIC (MOUSE & TOUCH) ===
+        // === ZOOM AND PAN LOGIC ===
         let scale = 1, panning = false, pointX = 0, pointY = 0, start = { x: 0, y: 0 };
         let draggingSlider = false;
         let initialPinchDistance = null;
@@ -503,13 +528,10 @@
         let initialPointY = 0;
         let pinchCenter = {x: 0, y: 0};
         let wheelPending = false;
-        // Cached reference for the swipe clipping target (avoids repeated getElementById in high-freq events)
         const wrapperNew = document.getElementById('viewer-wrapper-new');
 
         function setTransform() {
             const tf = 'translate(' + pointX + 'px, ' + pointY + 'px) scale(' + scale + ')';
-            
-            // Apply transform to all potential panes to keep them perfectly synced in split view
             const targets = ['img-wrapper-old', 'img-wrapper-new', 'img-wrapper-old-right', 'img-wrapper-new-right'];
             targets.forEach(id => {
                 const el = document.getElementById(id);
@@ -714,8 +736,9 @@
             diffData.forEach((file, index) => {
                 const li = document.createElement('li');
                 li.className = 'file-item';
+                li.dataset.status = file.status;
                 li.onclick = () => selectFile(index);
-                
+
                 let colorClass = "var(--text-muted)";
                 if (file.status === "Modified") colorClass = "#F44336";
                 else if (file.status === "New/Untracked") colorClass = "#4CAF50";
@@ -737,6 +760,8 @@
             const file = diffData[index];
             showOld = false; overlayMode = false; swipeMode = false; splitMode = false;
             
+            document.getElementById('bc-filename').innerText = file.name;
+
             layerDrop.innerHTML = '';
             layerDropRight.innerHTML = '';
             const layers = Object.keys(file.visuals);
@@ -787,6 +812,30 @@
         function toggleHelp() {
             helpVisible = !helpVisible;
             document.getElementById('shortcut-help').classList.toggle('visible', helpVisible);
+        }
+
+        function getVisibleFileIndices() {
+            const items = fileListEl.querySelectorAll('.file-item');
+            const indices = [];
+            items.forEach((el, i) => {
+                if (el.style.display !== 'none') indices.push(i);
+            });
+            return indices;
+        }
+
+        function toggleChangedOnly() {
+            showChangedOnly = !showChangedOnly;
+            const btn = document.getElementById('btn-changed-only');
+            btn.classList.toggle('active', showChangedOnly);
+            const items = fileListEl.querySelectorAll('.file-item');
+            items.forEach(el => {
+                const isUnchanged = el.dataset.status === 'Unchanged';
+                el.style.display = (showChangedOnly && isUnchanged) ? 'none' : '';
+            });
+            const visible = getVisibleFileIndices();
+            if (visible.length > 0 && !visible.includes(activeIndex)) {
+                selectFile(visible[0]);
+            }
         }
 
         function showFilterBar(show) {
@@ -854,6 +903,18 @@
             document.getElementById('tab-pcb-logic').classList.toggle('active', tab === 'pcb-logic');
             document.getElementById('tab-netlist').classList.toggle('active', tab === 'netlist');
             document.getElementById('tab-bom').classList.toggle('active', tab === 'bom');
+            
+            const vt = document.getElementById('visual-toolbar');
+            if (vt) {
+                // BUG FIX: Directly toggle the hidden class rather than manipulating style.display
+                // Because CSS '.hidden { display: none !important; }' will always override inline styles.
+                if (tab === 'visual') {
+                    vt.classList.remove('hidden');
+                } else {
+                    vt.classList.add('hidden');
+                }
+            }
+
             renderView();
         }
 
@@ -872,8 +933,6 @@
             const currSilkUrl = silkVisual ? resolveUrl(silkVisual.curr, null) : "";
             const oldSilkUrl = silkVisual ? resolveUrl(silkVisual.old, silkVisual.curr) : "";
 
-            // Mask/Paste overlays: shown when a copper layer is active and showMaskPaste is true,
-            // or when the mask/paste layer itself is selected as the main view.
             let maskLayer = null, pasteLayer = null;
             if (showMaskPaste) {
                 const isCopper = !['Silkscreen', 'Mask', 'Paste', 'Edge.Cuts'].some(t => layer.includes(t));
@@ -968,7 +1027,6 @@
                 if (currSilkUrl) { newSilkImgEl.src = currSilkUrl; newSilkImgEl.classList.remove('hidden'); }
             }
 
-            // Apply visual modes
             if (swipeMode && !splitMode && oldUrl && currUrl) {
                 wOld.classList.remove('hidden'); wNew.classList.remove('hidden'); 
                 if(prefix === "") {
@@ -1004,16 +1062,14 @@
             const isSch = file.name.endsWith('.kicad_sch');
             const isPcb = file.name.endsWith('.kicad_pcb');
 
-            document.getElementById('tab-netlist').classList.toggle('hidden', !isSch);
-            document.getElementById('tab-bom').classList.toggle('hidden', !isSch);
-            document.getElementById('tab-pcb-logic').classList.remove('hidden');
-            document.getElementById('tab-health').classList.toggle('hidden', isSch);
+            document.getElementById('tab-netlist').style.display = isSch ? 'block' : 'none';
+            document.getElementById('tab-bom').style.display = isSch ? 'block' : 'none';
+            document.getElementById('tab-health').innerText = 'DRC';
 
             noSelectionEl.classList.add('hidden');
             noOldMsgEl.classList.add('hidden');
             showFilterBar(false);
             
-            // Start entirely fresh by hiding visual components
             document.getElementById('pane').classList.add('hidden');
             viewerContainer.classList.add('hidden');
             textDiffContainer.classList.add('hidden');
@@ -1023,7 +1079,6 @@
             sliderHandle.classList.add('hidden'); 
             swipeLabels.classList.add('hidden');
 
-            // --- Update PCB Dimensions ---
             if (isPcb && currentTab === 'visual') {
                 dimContainer.classList.remove('hidden');
                 const dims = file.dimensions || {curr: null, old: null};
@@ -1037,7 +1092,6 @@
             } else { dimContainer.classList.add('hidden'); }
 
             if (currentTab === 'bom') {
-                btnToggleDiff.classList.add('hidden'); btnToggleOverlay.classList.add('hidden'); btnToggleSwipe.classList.add('hidden'); btnToggleSplit.classList.add('hidden'); resetBtn.classList.add('hidden');
                 bomContainer.classList.remove('hidden');
                 bomContainer.innerHTML = renderGroupedBom(file.bomData.old || {}, file.bomData.curr || {});
                 showFilterBar(true);
@@ -1047,7 +1101,6 @@
             }
 
             if (currentTab === 'netlist' || currentTab === 'pcb-logic') {
-                btnToggleDiff.classList.add('hidden'); btnToggleOverlay.classList.add('hidden'); btnToggleSwipe.classList.add('hidden'); btnToggleSplit.classList.add('hidden'); resetBtn.classList.add('hidden');
                 textDiffContainer.classList.remove('hidden');
                 let diffContent = currentTab === 'netlist' ? file.netlistDiff : file.pcbLogicDiff;
                 let tabName = currentTab === 'netlist' ? "Netlist Text Diff" : "Net/Component Changes";
@@ -1057,27 +1110,43 @@
             }
             
             if (currentTab === 'health') {
-                btnToggleDiff.classList.add('hidden'); btnToggleOverlay.classList.add('hidden'); btnToggleSwipe.classList.add('hidden'); btnToggleSplit.classList.add('hidden'); resetBtn.classList.add('hidden');
                 healthContainer.classList.remove('hidden');
-                
                 const health = file.health || {new: [], resolved: [], unresolved: []};
                 let emptyChecksMsg = "";
                 if (health.new.length === 0 && health.resolved.length === 0 && health.unresolved.length === 0) {
-                    emptyChecksMsg = "<div style='padding:15px; background:rgba(255,152,0,0.1); border:1px solid #FF9800; border-radius:4px; margin-bottom:15px;'><strong>Note:</strong> No violations detected, OR the <i>'Run DRC Check'</i> box was not checked before generating this view.</div>";
+                    emptyChecksMsg = `<div style='padding:15px; background:rgba(255,152,0,0.1); border:1px solid #FF9800; border-radius:4px; margin-bottom:15px;'><strong>Note:</strong> No violations detected, OR the <i>'Run DRC Checks'</i> box was not checked before generating this view.</div>`;
                 }
 
+                const checkLabel = 'DRC';
                 let html = emptyChecksMsg + '<div class="todos-wrapper">';
-                html += '<div class="todos-column"><div class="todos-header color-new">Resolved (Fixed)</div><ul class="todo-list">';
+                const resolvedCollapsed = health.resolved.length > 0;
+                
+                html += `<div class="todos-column">
+                    <div class="todos-header" style="cursor:pointer; user-select:none; display:flex; justify-content:space-between; align-items:center;"
+                         onclick="this.nextElementSibling.classList.toggle('hidden')"
+                         title="Click to expand/collapse">
+                        <span class="color-new">Resolved (Fixed) [${health.resolved.length}]</span>
+                        <span style="font-size:11px; color:var(--text-muted);">${resolvedCollapsed ? '▶ expand' : ''}</span>
+                    </div>
+                    <ul class="todo-list${resolvedCollapsed ? ' hidden' : ''}">`;
                 if (health.resolved.length === 0) html += '<li class="todo-empty">No issues were fixed in this pass.</li>';
                 else health.resolved.forEach(t => html += `<li class="todo-item todo-new">${formatHealthItem(t)}</li>`);
                 html += '</ul></div>';
 
-                html += '<div class="todos-column"><div class="todos-header color-old">Unresolved (Existing)</div><ul class="todo-list">';
+                html += `<div class="todos-column">
+                    <div class="todos-header" style="display:flex; justify-content:space-between; align-items:center;">
+                        <span class="color-old">Unresolved (Existing) [${health.unresolved.length}]</span>
+                    </div>
+                    <ul class="todo-list">`;
                 if (health.unresolved.length === 0) html += '<li class="todo-empty">No persistent issues.</li>';
                 else health.unresolved.forEach(t => html += `<li class="todo-item todo-old">${formatHealthItem(t)}</li>`);
                 html += '</ul></div>';
                 
-                html += '<div class="todos-column"><div class="todos-header color-err">New Issues</div><ul class="todo-list">';
+                html += `<div class="todos-column">
+                    <div class="todos-header" style="display:flex; justify-content:space-between; align-items:center;">
+                        <span class="color-err">New Issues [${health.new.length}]</span>
+                    </div>
+                    <ul class="todo-list">`;
                 if (health.new.length === 0) html += '<li class="todo-empty">No new issues introduced! 🎉</li>';
                 else health.new.forEach(t => html += `<li class="todo-item todo-err">${formatHealthItem(t)}</li>`);
                 html += '</ul></div></div>';
@@ -1085,22 +1154,29 @@
                 healthContainer.innerHTML = html;
                 showFilterBar(true);
                 applyFilter();
-                statusTextEl.innerHTML = `Showing: <strong>DRC Violations</strong>`;
+                statusTextEl.innerHTML = `Showing: <strong>${checkLabel} Violations</strong>`;
                 return;
             }
 
             if (currentTab === 'todos') {
-                btnToggleDiff.classList.add('hidden'); btnToggleOverlay.classList.add('hidden'); btnToggleSwipe.classList.add('hidden'); btnToggleSplit.classList.add('hidden'); resetBtn.classList.add('hidden');
                 todosContainer.classList.remove('hidden');
-                
                 const todos = file.todos || {curr: [], old: []};
                 let html = '<div class="todos-wrapper">';
-                html += '<div class="todos-column"><div class="todos-header color-old">' + escapeHtml(targetName) + ' TODOs</div><ul class="todo-list">';
+                
+                html += `<div class="todos-column">
+                    <div class="todos-header" style="display:flex; justify-content:space-between; align-items:center;">
+                        <span class="color-old">${escapeHtml(targetName)} TODOs [${todos.old ? todos.old.length : 0}]</span>
+                    </div>
+                    <ul class="todo-list">`;
                 if (!todos.old || todos.old.length === 0) html += '<li class="todo-empty">No TODOs found in ' + escapeHtml(targetName) + '.</li>';
                 else todos.old.forEach(t => html += `<li class="todo-item todo-old">${escapeHtml(t)}</li>`);
                 html += '</ul></div>';
 
-                html += '<div class="todos-column"><div class="todos-header color-new">Local Changes TODOs</div><ul class="todo-list">';
+                html += `<div class="todos-column">
+                    <div class="todos-header" style="display:flex; justify-content:space-between; align-items:center;">
+                        <span class="color-new">Local Changes TODOs [${todos.curr ? todos.curr.length : 0}]</span>
+                    </div>
+                    <ul class="todo-list">`;
                 if (!todos.curr || todos.curr.length === 0) html += '<li class="todo-empty">No TODOs found in the working tree.</li>';
                 else todos.curr.forEach(t => html += `<li class="todo-item todo-new">${escapeHtml(t)}</li>`);
                 html += '</ul></div></div>';
@@ -1116,7 +1192,6 @@
             viewerContainer.classList.remove('hidden');
             document.getElementById('pane').classList.remove('hidden');
             
-            // Set highlighted button states
             btnToggleSwipe.classList.toggle('btn-active', swipeMode && !splitMode);
             btnToggleOverlay.classList.toggle('btn-active', overlayMode);
             btnToggleDiff.classList.toggle('btn-active', showOld);
@@ -1178,7 +1253,7 @@
         function toggleSplit() { 
             if (activeIndex < 0 || currentTab !== 'visual') return; 
             splitMode = !splitMode; 
-            if (splitMode) swipeMode = false; // Disable swipe in split mode to avoid visual conflicts
+            if (splitMode) swipeMode = false; 
             renderView(); 
         }
 
@@ -1227,9 +1302,20 @@
             else if (event.key >= '1' && event.key <= '9') { const idx = parseInt(event.key) - 1; if (layerDrop.options[idx]) { layerDrop.selectedIndex = idx; changeLayer(layerDrop.value, 'left'); } }
             else if (event.code === 'KeyS') { event.preventDefault(); silkCheckbox.checked = !silkCheckbox.checked; toggleSilk(silkCheckbox.checked); }
             else if (event.code === 'KeyM') { event.preventDefault(); maskPasteCheckbox.checked = !maskPasteCheckbox.checked; toggleMaskPaste(maskPasteCheckbox.checked); }
+            else if (event.code === 'ArrowDown' || event.code === 'ArrowRight') {
+                event.preventDefault();
+                const visible = getVisibleFileIndices();
+                const pos = visible.indexOf(activeIndex);
+                if (pos < visible.length - 1) selectFile(visible[pos + 1]);
+            }
+            else if (event.code === 'ArrowUp' || event.code === 'ArrowLeft') {
+                event.preventDefault();
+                const visible = getVisibleFileIndices();
+                const pos = visible.indexOf(activeIndex);
+                if (pos > 0) selectFile(visible[pos - 1]);
+            }
         });
 
-        // Application Entry Point - Decompress JSON stream
         async function bootViewer() {
             try {
                 const b64Data = "__DIFF_B64_GZIP__";
@@ -1279,6 +1365,9 @@
             <div class="sc-row"><span class="sc-desc">Show / hide silkscreen (PCB)</span><kbd class="sc-key">S</kbd></div>
             <div class="sc-row"><span class="sc-desc">Show / hide mask &amp; paste (PCB)</span><kbd class="sc-key">M</kbd></div>
             <div class="sc-row"><span class="sc-desc">Select layer 1–9 (PCB)</span><kbd class="sc-key">1 – 9</kbd></div>
+            <div class="sc-section">Navigation</div>
+            <div class="sc-row"><span class="sc-desc">Next file in sidebar</span><kbd class="sc-key">↓ / →</kbd></div>
+            <div class="sc-row"><span class="sc-desc">Previous file in sidebar</span><kbd class="sc-key">↑ / ←</kbd></div>
             <div class="sc-section">General</div>
             <div class="sc-row"><span class="sc-desc">Show this panel</span><kbd class="sc-key">?</kbd></div>
             <div class="sc-row"><span class="sc-desc">Close panel</span><kbd class="sc-key">Esc</kbd></div>

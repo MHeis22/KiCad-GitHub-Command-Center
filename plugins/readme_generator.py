@@ -6,7 +6,7 @@ import sys
 import subprocess
 import json
 import tempfile
-from .utils import CREATE_NO_WINDOW
+from .utils import CREATE_NO_WINDOW, find_kicad_cli
 from .kicad_parser import get_pcb_dimensions, get_pcb_layers, get_bom_data, extract_todos, get_pcb_structure
 
 class ReadmeGenerator:
@@ -60,7 +60,7 @@ class ReadmeGenerator:
 
     def _get_drc_status(self, pcb_file):
         """Silently runs DRC in the background and returns a formatted markdown string."""
-        kicad_cli = "kicad-cli.exe" if sys.platform == "win32" else "kicad-cli"
+        kicad_cli = find_kicad_cli()
         out_json = os.path.join(tempfile.gettempdir(), "readme_drc_report.json")
         
         if os.path.exists(out_json):
