@@ -400,7 +400,10 @@ class CommandCenterDialog(wx.Dialog):
             target_raw = self.cb_targets.GetStringSelection()
             actual_target = target_raw.split(' ')[0] if ' ' in target_raw else target_raw
 
-            status_dict = self.engine.get_git_status(target=actual_target)
+            # Ignore KiCad re-serialization (reorder) noise so a cosmetic Ctrl+S
+            # doesn't show up as a committable change.
+            status_dict = self.engine.filter_reorder_noise(
+                self.engine.get_git_status(target=actual_target), target=actual_target)
             changes = len(status_dict)
 
             status_text = f"Working Branch: '{curr_branch}'\n"
@@ -416,7 +419,8 @@ class CommandCenterDialog(wx.Dialog):
                 if actual_target == "HEAD":
                     head_status = status_dict
                 else:
-                    head_status = self.engine.get_git_status(target="HEAD")
+                    head_status = self.engine.filter_reorder_noise(
+                        self.engine.get_git_status(target="HEAD"), target="HEAD")
                 uncommitted_changes = len(head_status) > 0
 
                 commit_font = self.btn_commit.GetFont()
@@ -878,19 +882,23 @@ class CommandCenterDialog(wx.Dialog):
         except Exception as e:
             wx.MessageBox(f"Failed to generate BOMs or Gerbers:\n{e}", "Generation Warning", wx.ICON_WARNING)
 
-        status_dict = self.engine.get_git_status(target="HEAD")
+        # Filter out KiCad re-serialization (reorder) noise so a cosmetic Ctrl+S
+        # isn't offered as a committable change.
+        status_dict = self.engine.filter_reorder_noise(
+            self.engine.get_git_status(target="HEAD"), target="HEAD")
         changed_files = list(status_dict.keys())
-        
+
         if any('\\' in f for f in changed_files):
             wx.MessageBox("Escaped filenames detected (e.g. \\303). Let's fix your Git encoding first so the commit doesn't crash.", "Encoding Issue", wx.ICON_WARNING)
             if self._check_and_prompt_git_encoding(force_prompt=True):
-                status_dict = self.engine.get_git_status(target="HEAD")
+                status_dict = self.engine.filter_reorder_noise(
+                    self.engine.get_git_status(target="HEAD"), target="HEAD")
                 changed_files = list(status_dict.keys())
             else:
-                return 
+                return
 
         if not changed_files:
-            wx.MessageBox("No changes detected. Workspace is clean.", "Info")
+            wx.MessageBox("No real changes detected (only KiCad re-serialization noise, if any). Workspace is clean.", "Info")
             return
 
         include_version = self.settings.get('include_kicad_version', True)

@@ -58,10 +58,12 @@ class DiffEngine:
         if not os.path.exists(file_path):
             return False
 
-        fname = os.path.basename(file_path)
+        # git show needs the repo-relative path (forward slashes), which also
+        # works for files in subfolders.
+        rel = os.path.relpath(file_path, self.project_dir).replace(os.sep, '/')
         try:
             res = subprocess.run(
-                [self.git_cmd, "-C", self.project_dir, "show", f"{target}:{fname}"],
+                [self.git_cmd, "-C", self.project_dir, "show", f"{target}:{rel}"],
                 capture_output=True, timeout=30, creationflags=CREATE_NO_WINDOW)
             if res.returncode != 0:
                 # No committed version at this target -> it's new/changed.
@@ -73,8 +75,26 @@ class DiffEngine:
 
             return self._normalized_multiset(old_text) != self._normalized_multiset(new_text)
         except Exception as e:
-            print(f"file_content_changed check failed for {fname}: {e}")
+            print(f"file_content_changed check failed for {rel}: {e}")
             return True
+
+    # KiCad S-expression files that get re-serialized (reordered) on every save.
+    _SEXPR_EXTS = ('.kicad_pcb', '.kicad_sch')
+
+    def filter_reorder_noise(self, status_dict, target="HEAD"):
+        """Returns a copy of status_dict with modified KiCad S-expr files removed
+        when their only change vs `target` is element re-ordering (save noise).
+
+        New/deleted/renamed files are always kept; only in-place modifications
+        (M/T) of .kicad_pcb/.kicad_sch are candidates for noise filtering."""
+        filtered = {}
+        for fname, code in status_dict.items():
+            if code in ('M', 'T') and fname.lower().endswith(self._SEXPR_EXTS):
+                full = os.path.join(self.project_dir, fname)
+                if not self.file_content_changed(full, target=target):
+                    continue  # cosmetic re-serialization only -> not a real change
+            filtered[fname] = code
+        return filtered
 
     def get_git_status(self, target="HEAD"):
         """Returns a dict of {filename: status_code} for files that differ between target and working tree"""
