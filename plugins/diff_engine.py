@@ -35,6 +35,44 @@ class DiffEngine:
             pass
         return "Unknown KiCad Version"
 
+    def _normalized_multiset(self, text):
+        """Order- and indentation-independent representation of a KiCad file.
+
+        KiCad re-serializes elements (track segments, vias, footprints...) in a
+        different order on nearly every save, producing large diffs with zero
+        real design change. Stripping each line and sorting collapses that
+        reordering/re-indentation noise while still reflecting any genuine
+        content change (added/removed/edited lines alter the multiset)."""
+        return sorted(line.strip() for line in text.splitlines() if line.strip())
+
+    def file_content_changed(self, file_path, target="HEAD"):
+        """Returns True if `file_path` differs semantically from `target`,
+        ignoring pure element re-ordering noise.
+
+        Returns True (treat as changed) when there is no committed version to
+        compare against, or on any error — the safe direction is to regenerate.
+        """
+        if not os.path.exists(file_path):
+            return False
+
+        fname = os.path.basename(file_path)
+        try:
+            res = subprocess.run(
+                [self.git_cmd, "-C", self.project_dir, "show", f"{target}:{fname}"],
+                capture_output=True, timeout=30, creationflags=CREATE_NO_WINDOW)
+            if res.returncode != 0:
+                # No committed version at this target -> it's new/changed.
+                return True
+
+            old_text = res.stdout.decode('utf-8', errors='ignore')
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                new_text = f.read()
+
+            return self._normalized_multiset(old_text) != self._normalized_multiset(new_text)
+        except Exception as e:
+            print(f"file_content_changed check failed for {fname}: {e}")
+            return True
+
     def get_git_status(self, target="HEAD"):
         """Returns a dict of {filename: status_code} for files that differ between target and working tree"""
         status_dict = {}

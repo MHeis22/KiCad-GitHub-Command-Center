@@ -1,16 +1,18 @@
 import wx
 import os
+import glob
 import subprocess
 import pcbnew
 import webbrowser
 import threading
 from .utils import CREATE_NO_WINDOW, load_settings, save_settings
-from .ui_dialogs import SettingsDialog, CommitDialog
+from .ui_dialogs import SettingsDialog, CommitDialog, Model3DSettingsDialog
 from .diff_engine import DiffEngine
 from .diff_window import DiffWindow
 from .readme_generator import ReadmeGenerator
 from .bom_generator import BOMGenerator
 from .jlcpcb_exporter import JLCPCBExporter
+from .model_exporter import Model3DExporter
 from .jlcpcb_rules import set_jlcpcb_constraints
 
 class CommandCenterDialog(wx.Dialog):
@@ -128,6 +130,14 @@ class CommandCenterDialog(wx.Dialog):
         self.cb_gerbers.Bind(wx.EVT_CHECKBOX, self.on_gerber_toggle)
         sizer_local.Add(self.cb_gerbers, flag=wx.LEFT | wx.RIGHT | wx.BOTTOM, border=5)
 
+        # --- 3D Model & Render Settings ---
+        btn_3d = wx.Button(self.scroll_panel, label="3D Model & Render Settings...", size=(-1, 40))
+        btn_3d.SetBackgroundColour(wx.Colour(230, 230, 250)) # Light Lavender (design feature)
+        btn_3d.SetForegroundColour(wx.Colour(0, 0, 0)) # Force black text
+        btn_3d.SetToolTip("Configure STEP model export and PCB image rendering generated on commit.")
+        btn_3d.Bind(wx.EVT_BUTTON, self.on_3d_settings)
+        sizer_local.Add(btn_3d, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=5)
+
         self.scroll_vbox.Add(sizer_local, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=10)
 
         # ==========================================
@@ -206,6 +216,13 @@ class CommandCenterDialog(wx.Dialog):
     def on_gerber_toggle(self, event):
         self.settings['generate_gerbers_zip'] = self.cb_gerbers.GetValue()
         save_settings(self.settings)
+
+    def on_3d_settings(self, event):
+        dlg = Model3DSettingsDialog(self, self.settings, kicad_version=self.kicad_version)
+        if dlg.ShowModal() == wx.ID_OK:
+            self.settings = dlg.get_settings()
+            save_settings(self.settings)
+        dlg.Destroy()
 
     def _check_and_prompt_git_encoding(self, force_prompt=False):
         if not os.path.isdir(os.path.join(self.project_dir, ".git")):
@@ -352,7 +369,9 @@ class CommandCenterDialog(wx.Dialog):
                 "# KiCad caches\n"
                 "fp-info-cache\n\n"
                 "# Plugin Temporary Files\n"
-                "tmp_git_old_*\n\n"
+                "tmp_git_old_*\n"
+                "# KiCad git-plugin per-project state (e.g. .kicad_git_plugin.json)\n"
+                ".kicad_git_*.json\n\n"
                 "# IDE & History Folders\n"
                 ".history/\n"
                 ".history_trim/\n\n"
@@ -584,24 +603,58 @@ class CommandCenterDialog(wx.Dialog):
                 if create_gi == wx.YES:
                     self.create_default_gitignore()
 
-        if self.settings.get('auto_readme', False):
+        # Determine whether the PCB was ACTUALLY updated (ignoring KiCad's
+        # re-ordering noise). STEP models, renders and gerbers are derived
+        # purely from the board, so there's no point regenerating them — and
+        # committing their churn — when the board hasn't semantically changed.
+        pcb_files = glob.glob(os.path.join(self.project_dir, "*.kicad_pcb"))
+        pcb_file = pcb_files[0] if pcb_files else None
+        pcb_updated = self.engine.file_content_changed(pcb_file, target="HEAD") if pcb_file else False
+
+        # --- Generate 3D STEP model & PCB render (before README so the image can be embedded) ---
+        board_images = None
+        export_step = self.settings.get('export_step', False)
+        render_image = self.settings.get('render_image', False)
+        if (export_step or render_image) and pcb_updated:
+            wx.BeginBusyCursor()
+            try:
+                model_exporter = Model3DExporter(self.project_dir, self.settings, self.kicad_version)
+                if export_step:
+                    model_exporter.export_step()
+                if render_image:
+                    board_images = model_exporter.render_images()
+            except Exception as e:
+                wx.MessageBox(f"Failed to generate 3D model/render:\n{e}", "3D Generation Warning", wx.ICON_WARNING)
+            finally:
+                if wx.IsBusy(): wx.EndBusyCursor()
+        elif (export_step or render_image) and not pcb_updated:
+            print("GitHub Command Center: PCB unchanged (reorder-only) - skipping STEP/render generation.")
+
+        # Update the README when the hardware summary is enabled, or when fresh
+        # board images need to be embedded.
+        if self.settings.get('auto_readme', False) or board_images:
             try:
                 rg = ReadmeGenerator(self.project_dir, self.settings)
-                rg.update_readme(self.kicad_version)
+                rg.update_readme(self.kicad_version, board_images=board_images)
             except Exception as e:
                 wx.MessageBox(f"Failed to update README.md:\n{e}", "Readme Generation Warning", wx.ICON_WARNING)
-        
+
         # --- Generate BOMs & Gerbers ---
         try:
             bom_gen = BOMGenerator(self.project_dir, self.settings)
             bom_gen.generate_boms()
-            
-            # Tie the gerber generation appropriately to the commit action 
+
+            # Tie the gerber generation appropriately to the commit action.
+            # Gerbers derive from the board, so skip them when the PCB only has
+            # reorder noise (no real update).
             if self.settings.get('generate_gerbers_zip', False):
-                board = pcbnew.GetBoard()
-                if board:
-                    exporter = JLCPCBExporter(board)
-                    exporter.generate_zip(self.project_dir, zip_filename="gerbers")
+                if pcb_updated:
+                    board = pcbnew.GetBoard()
+                    if board:
+                        exporter = JLCPCBExporter(board)
+                        exporter.generate_zip(self.project_dir, zip_filename="gerbers")
+                else:
+                    print("GitHub Command Center: PCB unchanged (reorder-only) - skipping gerber generation.")
         except Exception as e:
             wx.MessageBox(f"Failed to generate BOMs or Gerbers:\n{e}", "Generation Warning", wx.ICON_WARNING)
         
@@ -622,7 +675,9 @@ class CommandCenterDialog(wx.Dialog):
 
         include_version = self.settings.get('include_kicad_version', True)
 
-        dlg = CommitDialog(self, changed_files, kicad_version=self.kicad_version, include_version=include_version)
+        dlg = CommitDialog(self, changed_files, kicad_version=self.kicad_version,
+                           include_version=include_version, file_statuses=status_dict,
+                           project_dir=self.project_dir)
         if dlg.ShowModal() == wx.ID_OK:
             msg = dlg.get_message()
             branch = dlg.get_branch()
