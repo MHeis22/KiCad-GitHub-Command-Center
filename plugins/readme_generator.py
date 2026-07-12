@@ -26,6 +26,26 @@ class ReadmeGenerator:
                 return side.capitalize()
         return None
 
+    @staticmethod
+    def _schematic_base(pcb_files, sch_files):
+        """Best guess at the root-sheet base name so existing schematic SVGs can
+        be found by their <base>*.svg prefix (mirrors SchematicExporter)."""
+        if pcb_files:
+            return os.path.splitext(os.path.basename(pcb_files[0]))[0]
+        if sch_files:
+            return os.path.splitext(os.path.basename(sch_files[0]))[0]
+        return None
+
+    @staticmethod
+    def _schematic_caption(image_path, is_root):
+        """Caption for a schematic page: 'Schematic' for the root sheet, else the
+        sub-sheet name derived from the '<root>-<sheet>.svg' filename."""
+        if is_root:
+            return "Schematic"
+        stem = os.path.splitext(os.path.basename(image_path))[0]
+        suffix = stem.split('-', 1)[1] if '-' in stem else stem
+        return suffix.replace('_', ' ').strip().title() or "Schematic"
+
     def _find_readme(self):
         """Case-insensitive search for README.md to prevent duplicating files."""
         for f in os.listdir(self.project_dir):
@@ -183,7 +203,8 @@ class ReadmeGenerator:
                                 
         return data
 
-    def update_readme(self, kicad_version="Unknown KiCad Version", board_images=None):
+    def update_readme(self, kicad_version="Unknown KiCad Version", board_images=None,
+                      schematic_images=None, drc_status=None):
         pcb_files = glob.glob(os.path.join(self.project_dir, "*.kicad_pcb"))
         sch_files = glob.glob(os.path.join(self.project_dir, "*.kicad_sch"))
 
@@ -201,7 +222,26 @@ class ReadmeGenerator:
                 candidate = os.path.join("docs", f"{base}_{side}.png")
                 if os.path.exists(os.path.join(self.project_dir, candidate)):
                     found.append(candidate.replace(os.sep, "/"))
+            # Keep the dimensioned drawing embedded on commits that didn't
+            # re-render (it isn't one of the per-side renders above).
+            if self.settings.get('render_dimensions', False):
+                dim = os.path.join("docs", f"{base}_top_dimensioned.png")
+                if os.path.exists(os.path.join(self.project_dir, dim)):
+                    found.append(dim.replace(os.sep, "/"))
             board_images = found or None
+
+        # Same fallback for schematic SVG(s): if none were passed this commit but
+        # the feature is enabled, keep any previously-exported schematic embedded.
+        if not schematic_images and self.settings.get('export_schematic', False) and sch_files:
+            base = self._schematic_base(pcb_files, sch_files)
+            if base:
+                found = sorted(
+                    os.path.join("docs", os.path.basename(p)).replace(os.sep, "/")
+                    for p in glob.glob(os.path.join(self.project_dir, "docs", f"{base}*.svg"))
+                )
+                # Root sheet (shortest name for the prefix) first.
+                found.sort(key=len)
+                schematic_images = found or None
 
         # --- 1. Gather Basic Metrics ---
         dims_str = "Unknown"
@@ -222,8 +262,11 @@ class ReadmeGenerator:
             
             all_todos.update(extract_todos(pcb_file))
             
-            # Extract optional DRC metrics
-            if self.settings.get('readme_drc', False):
+            # DRC metrics: use a precomputed status when the caller ran it in
+            # parallel (see _generate_extra_files); otherwise compute it here.
+            if drc_status is not None:
+                drc_status_str = drc_status
+            elif self.settings.get('readme_drc', False):
                 drc_status_str = self._get_drc_status(pcb_file)
 
         # --- 2. Gather Advanced Metrics ---
@@ -305,9 +348,27 @@ class ReadmeGenerator:
                      if os.path.exists(os.path.join(self.project_dir, img))]
             for img in valid:
                 caption = self._side_caption(img)
+                if not caption and 'dimensioned' in os.path.basename(img).lower():
+                    caption = "Dimensions"
                 cap_html = f"<br><b>{caption}</b>" if caption else ""
                 md.append(f'<p align="center"><img src="{img}" width="{img_w}">{cap_html}</p>')
             if valid:
+                md.append("")
+
+        # Schematic sheet image(s), embedded below the board render.
+        if schematic_images:
+            sch_w = self.settings.get('readme_schematic_width', 700)
+            valid_sch = [img for img in schematic_images
+                         if os.path.exists(os.path.join(self.project_dir, img))]
+            # Page numbers only make sense (and only avoid noise) for multi-sheet
+            # designs; a single sheet stays just "Schematic".
+            multi_sheet = len(valid_sch) > 1
+            for idx, img in enumerate(valid_sch):
+                caption = self._schematic_caption(img, is_root=(idx == 0))
+                if multi_sheet:
+                    caption += f" — Page {idx + 1}"
+                md.append(f'<p align="center"><img src="{img}" width="{sch_w}"><br><b>{caption}</b></p>')
+            if valid_sch:
                 md.append("")
 
         md.extend([

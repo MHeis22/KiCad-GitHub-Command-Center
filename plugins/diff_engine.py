@@ -26,6 +26,11 @@ class DiffEngine:
         self.git_cmd = "git.exe" if os.name == "nt" else "git"
         # {(file_md5, layer, is_pcb): svg_out_path} — avoids re-exporting unchanged files
         self._svg_cache = {}
+        # {(abspath, mtime_ns, size, target_sha): bool} — memoizes the expensive
+        # git-show + line-sort in file_content_changed(). The target_sha in the
+        # key means a commit/checkout (which moves the ref) auto-invalidates it,
+        # and the mtime/size means a re-saved working file does too.
+        self._content_cache = {}
 
     def get_kicad_version(self):
         """Fetches the installed KiCad version via CLI."""
@@ -48,15 +53,43 @@ class DiffEngine:
         content change (added/removed/edited lines alter the multiset)."""
         return sorted(line.strip() for line in text.splitlines() if line.strip())
 
+    def _resolve_target_sha(self, target):
+        """Resolves a target (HEAD, branch, commit-ish) to a commit SHA, or None.
+        Cheap (git rev-parse) relative to the git-show + sort it helps cache."""
+        try:
+            res = subprocess.run(
+                [self.git_cmd, "-C", self.project_dir, "rev-parse", target],
+                capture_output=True, text=True, timeout=10, creationflags=CREATE_NO_WINDOW)
+            if res.returncode == 0:
+                return res.stdout.strip()
+        except Exception:
+            pass
+        return None
+
     def file_content_changed(self, file_path, target="HEAD"):
         """Returns True if `file_path` differs semantically from `target`,
         ignoring pure element re-ordering noise.
 
         Returns True (treat as changed) when there is no committed version to
         compare against, or on any error — the safe direction is to regenerate.
-        """
+
+        Memoized on (path, mtime, size, target SHA): the git-show + line-sort is
+        skipped when the same working file is re-checked against the same commit,
+        which happens repeatedly per commit and on every status refresh."""
         if not os.path.exists(file_path):
             return False
+
+        # Build a cache key from the working file's stat + the resolved target.
+        cache_key = None
+        try:
+            st = os.stat(file_path)
+            target_sha = self._resolve_target_sha(target)
+            if target_sha:
+                cache_key = (os.path.abspath(file_path), st.st_mtime_ns, st.st_size, target_sha)
+                if cache_key in self._content_cache:
+                    return self._content_cache[cache_key]
+        except OSError:
+            cache_key = None
 
         # git show needs the repo-relative path (forward slashes), which also
         # works for files in subfolders.
@@ -67,13 +100,18 @@ class DiffEngine:
                 capture_output=True, timeout=30, creationflags=CREATE_NO_WINDOW)
             if res.returncode != 0:
                 # No committed version at this target -> it's new/changed.
+                if cache_key is not None:
+                    self._content_cache[cache_key] = True
                 return True
 
             old_text = res.stdout.decode('utf-8', errors='ignore')
             with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
                 new_text = f.read()
 
-            return self._normalized_multiset(old_text) != self._normalized_multiset(new_text)
+            result = self._normalized_multiset(old_text) != self._normalized_multiset(new_text)
+            if cache_key is not None:
+                self._content_cache[cache_key] = result
+            return result
         except Exception as e:
             print(f"file_content_changed check failed for {rel}: {e}")
             return True

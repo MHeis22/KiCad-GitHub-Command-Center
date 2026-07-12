@@ -9,6 +9,7 @@ import pcbnew
 import webbrowser
 import threading
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
 
@@ -65,6 +66,7 @@ from .readme_generator import ReadmeGenerator
 from .bom_generator import BOMGenerator
 from .jlcpcb_exporter import JLCPCBExporter
 from .model_exporter import Model3DExporter
+from .schematic_exporter import SchematicExporter
 from .jlcpcb_rules import set_jlcpcb_constraints
 
 class CommandCenterDialog(wx.Dialog):
@@ -73,7 +75,12 @@ class CommandCenterDialog(wx.Dialog):
         self.project_dir = project_dir
         self.git_cmd = "git.exe" if os.name == "nt" else "git"
         self.engine = DiffEngine(self.project_dir)
-        self.kicad_version = self.engine.get_kicad_version()
+        # `kicad-cli --version` is slow to cold-start on Windows and isn't needed
+        # for the first paint, so warm it up in the background. Reads of the
+        # `kicad_version` property block only if that probe hasn't finished yet.
+        self._kicad_version = None
+        self._kicad_version_lock = threading.Lock()
+        threading.Thread(target=self._warm_kicad_version, daemon=True).start()
         self.settings = load_settings()
         
         self.main_panel = wx.Panel(self)
@@ -189,10 +196,16 @@ class CommandCenterDialog(wx.Dialog):
         sizer_local.Add(self.cb_gerbers, flag=wx.LEFT | wx.RIGHT | wx.BOTTOM, border=5)
 
         # --- 3D Model & Render Settings ---
-        btn_3d = _make_action_button(self.scroll_panel, "3D Model & Render Settings...", (230, 230, 250), (90, 70, 160))
+        btn_3d = _make_action_button(self.scroll_panel, "3D Model and Render Settings...", (230, 230, 250), (90, 70, 160))
         btn_3d.SetToolTip("Configure STEP model export and PCB image rendering generated on commit.")
         btn_3d.Bind(wx.EVT_BUTTON, self.on_3d_settings)
         sizer_local.Add(btn_3d, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=5)
+
+        # --- Manual file generation (hidden unless enabled in Settings) ---
+        self.btn_gen = _make_action_button(self.scroll_panel, "Generate Project Files", (255, 235, 200), (150, 110, 30))
+        self.btn_gen.SetToolTip("Run all enabled file generation now (BOMs, Gerbers, 3D model, renders, schematic, README) without committing.")
+        self.btn_gen.Bind(wx.EVT_BUTTON, self.on_generate_files)
+        sizer_local.Add(self.btn_gen, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=5)
 
         self.scroll_vbox.Add(sizer_local, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=10)
 
@@ -232,7 +245,10 @@ class CommandCenterDialog(wx.Dialog):
         self.scroll_vbox.Add(help_sizer, flag=wx.EXPAND | wx.ALL, border=10)
         
         self.scroll_panel.SetSizer(self.scroll_vbox)
-        
+        # Hide the manual-generation button up front unless the setting is on, so
+        # it doesn't reserve layout space or appear in automatic mode.
+        self._update_gen_button_visibility()
+
         # --- Persistent Bottom Bar ---
         bottom_sizer = wx.BoxSizer(wx.HORIZONTAL)
         btn_settings = wx.Button(self.main_panel, label="⚙ Settings")
@@ -264,6 +280,21 @@ class CommandCenterDialog(wx.Dialog):
         self.update_git_status()
         self._check_and_prompt_git_encoding()
         threading.Thread(target=self._check_for_updates, daemon=True).start()
+
+    def _warm_kicad_version(self):
+        """Background probe for the KiCad version (see __init__)."""
+        with self._kicad_version_lock:
+            if self._kicad_version is None:
+                self._kicad_version = self.engine.get_kicad_version()
+
+    @property
+    def kicad_version(self):
+        """The installed KiCad version string. Returns the warmed-up value, or
+        computes it on first access if the background probe hasn't finished."""
+        with self._kicad_version_lock:
+            if self._kicad_version is None:
+                self._kicad_version = self.engine.get_kicad_version()
+            return self._kicad_version
 
     def _check_for_updates(self):
         try:
@@ -373,6 +404,8 @@ class CommandCenterDialog(wx.Dialog):
             
             # Sync local checkbox with newly saved setting
             self.cb_gerbers.SetValue(self.settings.get('generate_gerbers_zip', False))
+            # Show/hide the manual-generation button to match the new mode.
+            self._update_gen_button_visibility()
         dlg.Destroy()
 
     def on_target_change(self, event):
@@ -580,6 +613,14 @@ class CommandCenterDialog(wx.Dialog):
                     else:
                         wx.MessageBox(f"Switched to branch '{selected}'.", "Success")
                         self.update_git_status()
+                        # Refresh the compare list so it reflects the new branch
+                        # context, preserving the current selection if still valid.
+                        new_targets = self.engine.get_git_targets()
+                        if new_targets:
+                            prev = self.cb_targets.GetStringSelection()
+                            self.cb_targets.SetItems(new_targets)
+                            self.cb_targets.SetSelection(
+                                new_targets.index(prev) if prev in new_targets else 0)
                 finally:
                     if wx.IsBusy(): wx.EndBusyCursor()
         dlg.Destroy()
@@ -819,6 +860,195 @@ class CommandCenterDialog(wx.Dialog):
         finally:
             if wx.IsBusy(): wx.EndBusyCursor()
 
+    def _set_status(self, msg):
+        """Immediately paints a status message (used as the generation progress
+        callback, mirroring the live feedback the push flow shows)."""
+        self.status_lbl.SetLabel(f"Status: {msg}")
+        self.status_lbl.Refresh()
+        self.status_lbl.Update()
+        wx.SafeYield()
+
+    def _generate_extra_files(self, progress=None, force=False):
+        """Runs every enabled 'extra file' generator (3D STEP, PCB render,
+        schematic SVG, README, BOMs, JLCPCB gerbers), writing outputs into the
+        project. Each generator is guarded independently so one failure doesn't
+        block the rest. `progress` is an optional callback taking a status string.
+
+        The heavy generators are each a separate 'kicad-cli' subprocess (3D STEP
+        export, PCB render, schematic SVG) with no shared state, so they run
+        concurrently in a thread pool for a large wall-clock win. README (needs
+        the fresh images), BOMs, and gerbers run afterwards on the main thread —
+        gerbers in particular MUST stay on the main thread because they call the
+        pcbnew plotting API, which is not thread-safe.
+
+        When `force` is True (the manual "Generate Project Files" button), every
+        enabled generator runs regardless of git state. When False (automatic on
+        commit), each board/schematic artifact is generated only if its source
+        changed OR its output file is missing — so a cosmetic Ctrl+S doesn't churn
+        the files, but enabling a feature still produces its output the first
+        time even if the source is committed/unchanged."""
+        def step(msg):
+            if progress:
+                progress(msg)
+
+        pcb_files = glob.glob(os.path.join(self.project_dir, "*.kicad_pcb"))
+        pcb_file = pcb_files[0] if pcb_files else None
+
+        export_step = self.settings.get('export_step', False)
+        render_image = self.settings.get('render_image', False)
+        gerbers_on = self.settings.get('generate_gerbers_zip', False)
+        auto_readme = self.settings.get('auto_readme', False)
+
+        # Only pay for the PCB change-check when a PCB-derived artifact needs it.
+        need_pcb_flag = pcb_file is not None and (export_step or render_image or gerbers_on)
+        pcb_updated = self.engine.file_content_changed(pcb_file, target="HEAD") if need_pcb_flag else False
+
+        # Assemble the independent kicad-cli jobs. Each entry is
+        # key -> (human label, zero-arg callable returning its result).
+        # A board artifact runs when forced, when the PCB genuinely changed, or
+        # when its output doesn't exist yet (first-time enable).
+        jobs = {}
+        if (export_step or render_image) and pcb_file:
+            model_exporter = Model3DExporter(self.project_dir, self.settings, self.kicad_version)
+            if export_step and (force or pcb_updated or not model_exporter.step_output_exists()):
+                jobs['step'] = ("3D STEP model", model_exporter.export_step)
+            if render_image and (force or pcb_updated or not model_exporter.renders_exist()):
+                jobs['render'] = ("PCB render", model_exporter.render_images)
+            if (render_image and self.settings.get('render_dimensions', False)
+                    and (force or pcb_updated or not model_exporter.dimensioned_exists('top'))):
+                jobs['dimensioned'] = ("Dimensioned drawing", lambda: model_exporter.render_dimensioned('top'))
+            if not jobs and (export_step or render_image):
+                print("GitHub Command Center: PCB unchanged and outputs present - skipping STEP/render generation.")
+
+        if self.settings.get('export_schematic', False):
+            sch_files = glob.glob(os.path.join(self.project_dir, "*.kicad_sch"))
+            if sch_files:
+                sch_exporter = SchematicExporter(self.project_dir, self.settings, self.kicad_version)
+                sch_updated = any(self.engine.file_content_changed(s, target="HEAD") for s in sch_files)
+                # Also export when the SVG doesn't exist yet, so enabling the
+                # feature on an unchanged/committed schematic still produces it
+                # (the change gate alone would skip it forever otherwise).
+                if force or sch_updated or not sch_exporter.output_exists():
+                    jobs['schematic'] = ("Schematic image", sch_exporter.export_svgs)
+                else:
+                    print("GitHub Command Center: Schematic unchanged and already exported - skipping.")
+
+        # The README DRC status is another independent kicad-cli call, so run it
+        # in the pool and hand the result to the README step instead of blocking
+        # on it. Only worthwhile when the README will actually be regenerated.
+        rg = None
+        drc_status = None
+        if auto_readme and self.settings.get('readme_drc', False) and pcb_file:
+            rg = ReadmeGenerator(self.project_dir, self.settings)
+            jobs['drc'] = ("DRC check", lambda: rg._get_drc_status(pcb_file))
+
+        board_images = None
+        schematic_images = None
+        dim_image = None
+        errors = []
+
+        # BOMs (pure Python) and gerbers (pcbnew) run on the MAIN thread. Gerbers
+        # MUST stay there — the pcbnew plotting API isn't thread-safe — but they
+        # share no files or state with the kicad-cli jobs, so we run them WHILE
+        # the pool's subprocesses execute to overlap the two.
+        def do_bom_and_gerbers():
+            try:
+                step("Generating BOMs...")
+                BOMGenerator(self.project_dir, self.settings).generate_boms()
+
+                # Gerbers derive from the board, so skip them when the PCB only
+                # has reorder noise — unless forced or the zip doesn't exist yet.
+                if gerbers_on:
+                    gerber_zip = os.path.join(self.project_dir, "production", "gerbers.zip")
+                    if force or pcb_updated or not os.path.exists(gerber_zip):
+                        step("Generating JLCPCB gerbers...")
+                        board = pcbnew.GetBoard()
+                        if board:
+                            JLCPCBExporter(board).generate_zip(self.project_dir, zip_filename="gerbers")
+                    else:
+                        print("GitHub Command Center: PCB unchanged and gerbers present - skipping gerber generation.")
+            except Exception as e:
+                errors.append(f"BOM/Gerbers: {e}")
+
+        # --- Run the subprocess generators concurrently ---
+        # as_completed() iterates on THIS (main) thread, so the progress callback
+        # and result collection stay on the main thread; only the blocking
+        # kicad-cli calls run in the worker threads.
+        if jobs:
+            step(f"Generating {len(jobs)} file set(s) in parallel...")
+            with ThreadPoolExecutor(max_workers=min(len(jobs), (os.cpu_count() or 4))) as executor:
+                future_map = {executor.submit(fn): (key, label) for key, (label, fn) in jobs.items()}
+                # Overlap: main-thread pcbnew gerbers + BOM run while the pool works.
+                do_bom_and_gerbers()
+                done = 0
+                for future in as_completed(future_map):
+                    key, label = future_map[future]
+                    done += 1
+                    try:
+                        result = future.result()
+                        if key == 'render':
+                            board_images = result
+                        elif key == 'schematic':
+                            schematic_images = result
+                        elif key == 'drc':
+                            drc_status = result
+                        elif key == 'dimensioned':
+                            dim_image = result
+                    except Exception as e:
+                        errors.append(f"{label}: {e}")
+                    step(f"{label} finished ({done}/{len(jobs)})")
+        else:
+            # No kicad-cli work this run; still generate BOMs/gerbers.
+            do_bom_and_gerbers()
+
+        # The dimensioned drawing is embedded alongside the board render(s).
+        if dim_image:
+            board_images = (board_images or []) + [dim_image]
+
+        # --- README last (needs the fresh images + DRC result) ---
+        if auto_readme or board_images or schematic_images:
+            try:
+                step("Updating README...")
+                if rg is None:
+                    rg = ReadmeGenerator(self.project_dir, self.settings)
+                rg.update_readme(self.kicad_version, board_images=board_images,
+                                 schematic_images=schematic_images, drc_status=drc_status)
+            except Exception as e:
+                errors.append(f"README: {e}")
+
+        # Surface any failures together, once, on the main thread.
+        if errors:
+            wx.MessageBox("Some file generation steps failed:\n\n- " + "\n- ".join(errors),
+                          "Generation Warnings", wx.ICON_WARNING)
+
+    def on_generate_files(self, event):
+        """Manual-mode trigger for the 'Generate Project Files' button. Runs the
+        same generation pipeline as a commit would, with live status feedback,
+        but without committing so the user can review the results first.
+
+        force=True: everything the user has enabled is (re)generated, even when
+        nothing changed — that's the whole point of clicking the button."""
+        self.btn_gen.Disable()
+        self.status_lbl.SetLabel("Status: Generating project files...")
+        wx.BeginBusyCursor()
+        try:
+            self._generate_extra_files(progress=self._set_status, force=True)
+            wx.MessageBox("Project files generated. Review and commit them when ready.",
+                          "Generation Complete")
+        finally:
+            if wx.IsBusy(): wx.EndBusyCursor()
+            self.btn_gen.Enable()
+            self.update_git_status()
+
+    def _update_gen_button_visibility(self):
+        """Shows the 'Generate Project Files' button only in manual mode; in the
+        default automatic mode it stays hidden (generation happens on commit)."""
+        manual = self.settings.get('manual_file_generation', False)
+        self.btn_gen.Show(manual)
+        self.scroll_vbox.Layout()
+        self.scroll_panel.FitInside()
+        self.main_panel.Layout()
+
     def on_commit(self, event):
         if not os.path.isdir(os.path.join(self.project_dir, ".git")):
             subprocess.run([self.git_cmd, "-C", self.project_dir, "init"], check=True, creationflags=CREATE_NO_WINDOW)
@@ -828,59 +1058,16 @@ class CommandCenterDialog(wx.Dialog):
                 if create_gi == wx.YES:
                     self.create_default_gitignore()
 
-        # Determine whether the PCB was ACTUALLY updated (ignoring KiCad's
-        # re-ordering noise). STEP models, renders and gerbers are derived
-        # purely from the board, so there's no point regenerating them — and
-        # committing their churn — when the board hasn't semantically changed.
-        pcb_files = glob.glob(os.path.join(self.project_dir, "*.kicad_pcb"))
-        pcb_file = pcb_files[0] if pcb_files else None
-        pcb_updated = self.engine.file_content_changed(pcb_file, target="HEAD") if pcb_file else False
-
-        # --- Generate 3D STEP model & PCB render (before README so the image can be embedded) ---
-        board_images = None
-        export_step = self.settings.get('export_step', False)
-        render_image = self.settings.get('render_image', False)
-        if (export_step or render_image) and pcb_updated:
+        # Extra file generation (3D STEP, renders, schematic, README, BOMs,
+        # gerbers) normally runs here as part of committing. When the user opts
+        # into manual mode it's driven by the "Generate Project Files" button
+        # instead, so skip it and just commit whatever is already on disk.
+        if not self.settings.get('manual_file_generation', False):
             wx.BeginBusyCursor()
             try:
-                model_exporter = Model3DExporter(self.project_dir, self.settings, self.kicad_version)
-                if export_step:
-                    model_exporter.export_step()
-                if render_image:
-                    board_images = model_exporter.render_images()
-            except Exception as e:
-                wx.MessageBox(f"Failed to generate 3D model/render:\n{e}", "3D Generation Warning", wx.ICON_WARNING)
+                self._generate_extra_files(progress=self._set_status)
             finally:
                 if wx.IsBusy(): wx.EndBusyCursor()
-        elif (export_step or render_image) and not pcb_updated:
-            print("GitHub Command Center: PCB unchanged (reorder-only) - skipping STEP/render generation.")
-
-        # Update the README when the hardware summary is enabled, or when fresh
-        # board images need to be embedded.
-        if self.settings.get('auto_readme', False) or board_images:
-            try:
-                rg = ReadmeGenerator(self.project_dir, self.settings)
-                rg.update_readme(self.kicad_version, board_images=board_images)
-            except Exception as e:
-                wx.MessageBox(f"Failed to update README.md:\n{e}", "Readme Generation Warning", wx.ICON_WARNING)
-
-        # --- Generate BOMs & Gerbers ---
-        try:
-            bom_gen = BOMGenerator(self.project_dir, self.settings)
-            bom_gen.generate_boms()
-
-            # Gerbers derive from the board, so skip them when the PCB only has
-            # reorder noise (no real update).
-            if self.settings.get('generate_gerbers_zip', False):
-                if pcb_updated:
-                    board = pcbnew.GetBoard()
-                    if board:
-                        exporter = JLCPCBExporter(board)
-                        exporter.generate_zip(self.project_dir, zip_filename="gerbers")
-                else:
-                    print("GitHub Command Center: PCB unchanged (reorder-only) - skipping gerber generation.")
-        except Exception as e:
-            wx.MessageBox(f"Failed to generate BOMs or Gerbers:\n{e}", "Generation Warning", wx.ICON_WARNING)
 
         # Filter out KiCad re-serialization (reorder) noise so a cosmetic Ctrl+S
         # isn't offered as a committable change.
@@ -992,12 +1179,23 @@ class CommandCenterDialog(wx.Dialog):
                     else:
                         print("Silent pull aborted: Remote KiCad changes detected.")
 
-            res = subprocess.run([self.git_cmd, "-C", self.project_dir, "push", "-u", "origin", branch], 
+            res = subprocess.run([self.git_cmd, "-C", self.project_dir, "push", "-u", "origin", branch],
                                  capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
-            
+
             if res.returncode == 0:
                 success = True
                 message = f"Successfully pushed branch '{branch}' to Remote."
+
+                # A plain branch push leaves local tags behind, so version tags
+                # created via "Create Version Tag" never reached the remote.
+                # Publish them too (no-op when there are none).
+                res_tags = subprocess.run([self.git_cmd, "-C", self.project_dir, "push", "origin", "--tags"],
+                                          capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
+                if res_tags.returncode == 0:
+                    if "new tag" in (res_tags.stderr or ""):
+                        message += "\nVersion tags pushed."
+                else:
+                    message += f"\n\n(Branch pushed, but pushing tags failed:\n{res_tags.stderr.strip()})"
             else:
                 success = False
                 message = f"Push Failed:\n{res.stderr.strip()}"

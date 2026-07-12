@@ -11,7 +11,7 @@ class Model3DSettingsDialog(wx.Dialog):
     """
 
     def __init__(self, parent, current_settings, kicad_version=""):
-        super().__init__(parent, title="3D Model & Render Settings", size=(500, 620))
+        super().__init__(parent, title="3D Model & Render Settings", size=(500, 810))
         self.settings = current_settings.copy()
         self.kicad_version = kicad_version
         self.render_ok = render_supported(kicad_version)
@@ -67,6 +67,14 @@ class Model3DSettingsDialog(wx.Dialog):
         self.cb_both_sides.Bind(wx.EVT_CHECKBOX, self.on_toggle)
         render_sizer.Add(self.cb_both_sides, flag=wx.LEFT | wx.RIGHT | wx.BOTTOM, border=8)
 
+        self.cb_dims = wx.CheckBox(self, label="Add a dimensioned drawing (auto W/H, corner R, hole Ø & offsets)")
+        self.cb_dims.SetValue(self.settings.get('render_dimensions', False))
+        self.cb_dims.SetToolTip(
+            "Produces a separate top-view technical drawing with automatic board width/height,\n"
+            "corner radius, and mounting-hole diameters & edge distances, and embeds it in the README.\n"
+            "Values are read straight from the board; adapts to irregular outlines and hole layouts.")
+        render_sizer.Add(self.cb_dims, flag=wx.LEFT | wx.RIGHT | wx.BOTTOM, border=8)
+
         # Quality / side / background dropdowns
         grid = wx.FlexGridSizer(cols=2, vgap=8, hgap=10)
         grid.AddGrowableCol(1, 1)
@@ -107,6 +115,33 @@ class Model3DSettingsDialog(wx.Dialog):
         render_sizer.Add(grid, flag=wx.EXPAND | wx.ALL, border=8)
         vbox.Add(render_sizer, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=15)
 
+        # --- Schematic Image ---
+        sch_box = wx.StaticBox(self, label="Schematic Image (README)")
+        sch_sizer = wx.StaticBoxSizer(sch_box, wx.VERTICAL)
+
+        self.cb_schematic = wx.CheckBox(self, label="Export schematic to /docs (SVG) and embed in README")
+        self.cb_schematic.SetValue(self.settings.get('export_schematic', False))
+        self.cb_schematic.SetToolTip("Runs 'kicad-cli sch export svg'. Emits one SVG per sheet; embedded in the README hardware summary.")
+        self.cb_schematic.Bind(wx.EVT_CHECKBOX, self.on_toggle)
+        sch_sizer.Add(self.cb_schematic, flag=wx.ALL, border=8)
+
+        self.cb_sch_bw = wx.CheckBox(self, label="Black and white")
+        self.cb_sch_bw.SetValue(self.settings.get('schematic_bw', False))
+        sch_sizer.Add(self.cb_sch_bw, flag=wx.LEFT | wx.RIGHT | wx.BOTTOM, border=8)
+
+        self.cb_sch_nosheet = wx.CheckBox(self, label="Exclude drawing sheet (border & title block)")
+        self.cb_sch_nosheet.SetValue(self.settings.get('schematic_no_sheet', False))
+        sch_sizer.Add(self.cb_sch_nosheet, flag=wx.LEFT | wx.RIGHT | wx.BOTTOM, border=8)
+
+        sch_grid = wx.FlexGridSizer(cols=2, vgap=8, hgap=10)
+        sch_grid.AddGrowableCol(1, 1)
+        self.sc_sch_w = wx.SpinCtrl(self, min=100, max=2000, initial=int(self.settings.get('readme_schematic_width', 700)))
+        sch_grid.Add(wx.StaticText(self, label="README schematic width (px):"), flag=wx.ALIGN_CENTER_VERTICAL)
+        sch_grid.Add(self.sc_sch_w, flag=wx.EXPAND)
+        sch_sizer.Add(sch_grid, flag=wx.EXPAND | wx.ALL, border=8)
+
+        vbox.Add(sch_sizer, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=15)
+
         # Buttons
         btn_sizer = wx.StdDialogButtonSizer()
         btn_ok = wx.Button(self, wx.ID_OK)
@@ -136,11 +171,17 @@ class Model3DSettingsDialog(wx.Dialog):
             self.cb_render.SetToolTip("Requires KiCad 9.0+. Your installed version does not provide 'kicad-cli pcb render'.")
 
         render_on = self.render_ok and self.cb_render.GetValue()
-        for ctrl in (self.cb_both_sides, self.ch_quality, self.ch_bg,
+        for ctrl in (self.cb_both_sides, self.cb_dims, self.ch_quality, self.ch_bg,
                      self.sc_width, self.sc_height, self.sc_readme_w):
             ctrl.Enable(render_on)
         # The single-side choice is irrelevant when rendering both sides.
         self.ch_side.Enable(render_on and not self.cb_both_sides.GetValue())
+
+        # Schematic export sub-options follow their own toggle (no version gate:
+        # 'sch export svg' is available on all supported KiCad versions).
+        sch_on = self.cb_schematic.GetValue()
+        for ctrl in (self.cb_sch_bw, self.cb_sch_nosheet, self.sc_sch_w):
+            ctrl.Enable(sch_on)
 
     def get_settings(self):
         self.settings['export_step'] = self.cb_step.IsChecked()
@@ -151,19 +192,25 @@ class Model3DSettingsDialog(wx.Dialog):
         # Never persist render_image as True on an unsupported version.
         self.settings['render_image'] = self.cb_render.IsChecked() and self.render_ok
         self.settings['render_both_sides'] = self.cb_both_sides.IsChecked()
+        self.settings['render_dimensions'] = self.cb_dims.IsChecked() and self.render_ok
         self.settings['render_quality'] = self.quality_choices[self.ch_quality.GetSelection()]
         self.settings['render_side'] = self.ch_side.GetStringSelection()
         self.settings['render_background'] = self.ch_bg.GetStringSelection()
         self.settings['render_width'] = self.sc_width.GetValue()
         self.settings['render_height'] = self.sc_height.GetValue()
         self.settings['readme_image_width'] = self.sc_readme_w.GetValue()
+
+        self.settings['export_schematic'] = self.cb_schematic.IsChecked()
+        self.settings['schematic_bw'] = self.cb_sch_bw.IsChecked()
+        self.settings['schematic_no_sheet'] = self.cb_sch_nosheet.IsChecked()
+        self.settings['readme_schematic_width'] = self.sc_sch_w.GetValue()
         return self.settings
 
 
 class SettingsDialog(wx.Dialog):
     def __init__(self, parent, current_settings):
         # Slightly reduced window height as we moved the gerbers toggle
-        super().__init__(parent, title="Settings", size=(470, 480)) 
+        super().__init__(parent, title="Settings", size=(470, 540))
         self.settings = current_settings.copy()
         
         vbox = wx.BoxSizer(wx.VERTICAL)
@@ -190,6 +237,14 @@ class SettingsDialog(wx.Dialog):
         self.cb_silent_pull.SetValue(self.settings.get('silent_pull', False))
         self.cb_silent_pull.SetToolTip("Automatically pulls remote changes to safe text files (README.md, .csv) before pushing.\nAborts pulling if remote KiCad schematic or PCB changes are detected.")
         vbox.Add(self.cb_silent_pull, flag=wx.LEFT | wx.RIGHT | wx.BOTTOM, border=15)
+
+        # Manual file generation toggle. When on, the extra-file generators do
+        # NOT run on commit; a "Generate Project Files" button appears in the
+        # main window to run them on demand instead.
+        self.cb_manual_gen = wx.CheckBox(self, label="Generate extra files manually via a button (not on every commit)")
+        self.cb_manual_gen.SetValue(self.settings.get('manual_file_generation', False))
+        self.cb_manual_gen.SetToolTip("Covers BOMs, Gerbers, 3D model, PCB renders, schematic image and README.\nWhen enabled, these are produced only when you click 'Generate Project Files'.")
+        vbox.Add(self.cb_manual_gen, flag=wx.LEFT | wx.RIGHT | wx.BOTTOM, border=15)
 
         # --- BOM Generation ---
         bom_box = wx.StaticBox(self, label="BOM Generation (Auto-run on Commit)")
@@ -249,7 +304,8 @@ class SettingsDialog(wx.Dialog):
         self.settings['auto_readme'] = self.cb_readme.IsChecked()
         self.settings['readme_drc'] = self.cb_readme_drc.IsChecked()
         self.settings['silent_pull'] = self.cb_silent_pull.IsChecked()
-        
+        self.settings['manual_file_generation'] = self.cb_manual_gen.IsChecked()
+
         self.settings['generate_bom_dist'] = self.cb_bom_dist.IsChecked()
         self.settings['generate_bom_eng'] = self.cb_bom_eng.IsChecked()
         self.settings['mpn_field_name'] = self.tc_mpn.GetValue().strip() or "MPN"
