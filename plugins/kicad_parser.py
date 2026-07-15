@@ -11,8 +11,11 @@ def get_pcb_layers(pcb_file):
         with open(pcb_file, 'r', encoding='utf-8', errors='ignore') as f:
             content = f.read()
             
-            # Match all valid copper types instead of just 'signal'
-            matches = re.findall(r'\(\d+\s+"([^"]+)"\s+(?:signal|power|mixed|jumper)\)', content)
+            # Match all valid copper types instead of just 'signal'. The optional
+            # trailing quoted string handles user-renamed layers, which KiCad
+            # writes as (2 "In1.Cu" signal "GND_plane") — without it, every
+            # renamed inner layer was silently dropped from the diff.
+            matches = re.findall(r'\(\d+\s+"([^"]+)"\s+(?:signal|power|mixed|jumper)(?:\s+"[^"]*")?\s*\)', content)
             if matches:
                 layers = matches + ["F.Silkscreen", "B.Silkscreen", "F.Mask", "B.Mask", "F.Paste", "B.Paste", "Edge.Cuts"]
                 
@@ -201,7 +204,12 @@ def get_sch_structure(file_path):
     return components
 
 def get_bom_data(file_path, include_excluded_from_bom=False, mpn_field=None):
-    """Extracts structured BOM data, respecting Exclude from Board / DNP flags."""
+    """Extracts structured BOM data.
+
+    'Exclude from BOM' parts ((in_bom no)) are dropped unless
+    include_excluded_from_bom is set. Do-Not-Populate status is NOT filtered —
+    it's recorded per part as a 'dnp' flag so callers can keep DNP parts in the
+    BOM while still flagging them (see BOMGenerator)."""
     bom = {}
     if not file_path or not os.path.exists(file_path):
         return bom
@@ -233,12 +241,20 @@ def get_bom_data(file_path, include_excluded_from_bom=False, mpn_field=None):
                     mpn_regex = r'\(\s*property\s+"(?:MPN|Part Number|Manufacturer Part Number|Manufacturer_Part_Number|LCSC Part|LCSC)"\s+"([^"]*)"'
                 
                 mpn_match = re.search(mpn_regex, block, re.IGNORECASE)
-                
+
+                # Detect Do-Not-Populate: the modern (dnp yes) token, or a legacy
+                # "dnp" property set to a truthy value.
+                is_dnp = bool(
+                    re.search(r'\(\s*dnp\s+yes\s*\)', block)
+                    or re.search(r'\(\s*property\s+"dnp"\s+"(?:yes|true|1)"', block, re.IGNORECASE)
+                )
+
                 bom[ref] = {
                     'val': val_match.group(1) if val_match else "",
                     'fp': fp_match.group(1) if fp_match else "",
                     'desc': desc_match.group(1) if desc_match else "",
-                    'mpn': mpn_match.group(1) if mpn_match else ""
+                    'mpn': mpn_match.group(1) if mpn_match else "",
+                    'dnp': is_dnp
                 }
     except Exception as e:
         print(f"BOM Extraction Error: {e}")

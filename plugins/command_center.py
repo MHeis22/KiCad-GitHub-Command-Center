@@ -75,6 +75,11 @@ class CommandCenterDialog(wx.Dialog):
         self.project_dir = project_dir
         self.git_cmd = "git.exe" if os.name == "nt" else "git"
         self.engine = DiffEngine(self.project_dir)
+        # Guards for the background status refresh: a monotonic token discards
+        # stale results when refreshes overlap, and _alive suppresses UI updates
+        # that land after the dialog has been closed.
+        self._status_token = 0
+        self._alive = True
         # `kicad-cli --version` is slow to cold-start on Windows and isn't needed
         # for the first paint, so warm it up in the background. Reads of the
         # `kicad_version` property block only if that probe hasn't finished yet.
@@ -421,6 +426,21 @@ class CommandCenterDialog(wx.Dialog):
                 self.btn_commit.SetForegroundColour(_action_text_colour())
                 self.btn_push.SetForegroundColour(_action_text_colour())
             return
+
+        # The git work here (status plus reorder-noise filtering, which shells out
+        # once per changed KiCad file) is too slow to run on the UI thread every
+        # refresh, so compute it in the background and apply via CallAfter. The
+        # token discards results from a superseded refresh.
+        target_raw = self.cb_targets.GetStringSelection()
+        self.status_lbl.SetLabel("Checking status...")
+        self._status_token += 1
+        token = self._status_token
+        threading.Thread(target=self._compute_git_status,
+                         args=(target_raw, token), daemon=True).start()
+
+    def _compute_git_status(self, target_raw, token):
+        """Background worker for update_git_status(): does only git/subprocess
+        work, then hands the result to _apply_git_status on the main thread."""
         try:
             # Single call gives us branch name, ahead/behind, and porcelain status
             res_sb = subprocess.run([self.git_cmd, "-C", self.project_dir, "status", "-sb"],
@@ -430,7 +450,6 @@ class CommandCenterDialog(wx.Dialog):
             curr_branch = branch_match.group(1) if branch_match else "Detached HEAD"
             is_ahead = "[ahead" in first_line
 
-            target_raw = self.cb_targets.GetStringSelection()
             actual_target = target_raw.split(' ')[0] if ' ' in target_raw else target_raw
 
             # Ignore KiCad re-serialization (reorder) noise so a cosmetic Ctrl+S
@@ -439,25 +458,42 @@ class CommandCenterDialog(wx.Dialog):
                 self.engine.get_git_status(target=actual_target), target=actual_target)
             changes = len(status_dict)
 
-            status_text = f"Working Branch: '{curr_branch}'\n"
-            if changes > 0:
-                status_text += f"Status: {changes} changes relative to {actual_target}."
+            # Reuse status_dict when target is HEAD; otherwise get HEAD status separately
+            if actual_target == "HEAD":
+                head_status = status_dict
             else:
-                status_text += f"Status: Workspace identical to {actual_target}."
+                head_status = self.engine.filter_reorder_noise(
+                    self.engine.get_git_status(target="HEAD"), target="HEAD")
+            uncommitted_changes = len(head_status) > 0
 
+            wx.CallAfter(self._apply_git_status, token, {
+                'curr_branch': curr_branch, 'actual_target': actual_target,
+                'changes': changes, 'is_ahead': is_ahead,
+                'uncommitted_changes': uncommitted_changes,
+            }, None)
+        except Exception as e:
+            wx.CallAfter(self._apply_git_status, token, None, str(e))
+
+    def _apply_git_status(self, token, data, error):
+        """Main-thread UI update for update_git_status(). Ignores superseded
+        refreshes and no-ops if the dialog has already been closed."""
+        if token != self._status_token or not self._alive:
+            return
+        try:
+            if error is not None:
+                self.status_lbl.SetLabel(f"Status: Git Error. {error}")
+                return
+
+            status_text = f"Working Branch: '{data['curr_branch']}'\n"
+            if data['changes'] > 0:
+                status_text += f"Status: {data['changes']} changes relative to {data['actual_target']}."
+            else:
+                status_text += f"Status: Workspace identical to {data['actual_target']}."
             self.status_lbl.SetLabel(status_text)
 
             if hasattr(self, 'btn_commit'):
-                # Reuse status_dict when target is HEAD; otherwise get HEAD status separately
-                if actual_target == "HEAD":
-                    head_status = status_dict
-                else:
-                    head_status = self.engine.filter_reorder_noise(
-                        self.engine.get_git_status(target="HEAD"), target="HEAD")
-                uncommitted_changes = len(head_status) > 0
-
                 commit_font = self.btn_commit.GetFont()
-                if uncommitted_changes:
+                if data['uncommitted_changes']:
                     self.btn_commit.SetBackgroundColour(_action_bg((150, 255, 150), (30, 150, 60)))
                     commit_font.SetWeight(wx.FONTWEIGHT_BOLD)
                 else:
@@ -468,8 +504,7 @@ class CommandCenterDialog(wx.Dialog):
                 self.btn_commit.SetFont(commit_font)
 
                 push_font = self.btn_push.GetFont()
-
-                if is_ahead:
+                if data['is_ahead']:
                     self.btn_push.SetBackgroundColour(_action_bg((255, 180, 100), (180, 100, 20)))
                     push_font.SetWeight(wx.FONTWEIGHT_BOLD)
                 else:
@@ -478,12 +513,11 @@ class CommandCenterDialog(wx.Dialog):
 
                 self.btn_push.SetForegroundColour(_action_text_colour())
                 self.btn_push.SetFont(push_font)
-                
+
                 self.btn_commit.Refresh()
                 self.btn_push.Refresh()
-                
-        except Exception as e:
-            self.status_lbl.SetLabel(f"Status: Git Error. {e}")
+        except RuntimeError:
+            pass  # dialog was destroyed between the CallAfter and now
 
     def create_default_gitignore(self):
         gitignore_path = os.path.join(self.project_dir, ".gitignore")
@@ -825,24 +859,96 @@ class CommandCenterDialog(wx.Dialog):
                     backup_dlg = wx.MessageDialog(
                         self,
                         "Would you like to save your current local state to a backup branch first?\n\n"
-                        "This lets you recover any uncommitted work after the sync.",
+                        "This commits ALL current work — including uncommitted and untracked\n"
+                        "files — onto a new branch so it can be recovered after the sync.",
                         "Create Backup Branch?",
                         wx.YES_NO | wx.ICON_QUESTION
                     )
-                    if backup_dlg.ShowModal() == wx.ID_YES:
-                        stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                        backup_name = f"backup_{stamp}"
-                        res_bk = subprocess.run(
-                            [self.git_cmd, "-C", self.project_dir, "branch", backup_name],
-                            capture_output=True, text=True, creationflags=CREATE_NO_WINDOW
-                        )
-                        if res_bk.returncode == 0:
-                            wx.MessageBox(f"Backup branch '{backup_name}' created.", "Backup Created")
-                        else:
-                            wx.MessageBox(f"Could not create backup branch:\n{res_bk.stderr}", "Warning", wx.ICON_WARNING)
+                    want_backup = backup_dlg.ShowModal() == wx.ID_YES
                     backup_dlg.Destroy()
+
+                    if want_backup:
+                        wx.BeginBusyCursor()
+                        try:
+                            backup_name, err = self._create_backup_snapshot()
+                        finally:
+                            if wx.IsBusy(): wx.EndBusyCursor()
+
+                        if err:
+                            proceed_dlg = wx.MessageDialog(
+                                self,
+                                f"Could not create a backup:\n\n{err}\n\n"
+                                "Continue with the force sync anyway? Your uncommitted and "
+                                "untracked work WILL be permanently lost.",
+                                "Backup Failed", wx.YES_NO | wx.NO_DEFAULT | wx.ICON_WARNING
+                            )
+                            go_on = proceed_dlg.ShowModal() == wx.ID_YES
+                            proceed_dlg.Destroy()
+                            if not go_on:
+                                dlg.Destroy()
+                                return
+                        else:
+                            wx.MessageBox(
+                                f"Backup branch '{backup_name}' created with all your current "
+                                "work (committed, uncommitted, and untracked).\n\n"
+                                f"To recover it later, run:\n  git checkout {backup_name}",
+                                "Backup Created"
+                            )
+
                     self.perform_atomic_overwrite(target)
         dlg.Destroy()
+
+    def _create_backup_snapshot(self):
+        """Saves the FULL current working state — committed history plus any
+        uncommitted and untracked files — onto a new 'backup_<timestamp>' branch,
+        then returns to the original branch. A bare 'git branch' only bookmarks
+        HEAD, so it would NOT protect the uncommitted/untracked work that the
+        subsequent 'reset --hard' + 'clean -fd' destroys; committing it onto the
+        backup branch actually does.
+
+        Returns (backup_branch_name, None) on success, or (None, error_message).
+        """
+        stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        backup_name = f"backup_{stamp}"
+
+        def run(args):
+            return subprocess.run([self.git_cmd, "-C", self.project_dir] + args,
+                                  capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
+
+        # Where to return to afterwards: the branch name, or the commit SHA if
+        # we're on a detached HEAD.
+        original = run(["symbolic-ref", "--quiet", "--short", "HEAD"]).stdout.strip()
+        if not original:
+            original = run(["rev-parse", "HEAD"]).stdout.strip()
+        if not original:
+            return None, "Could not determine the current branch or commit."
+
+        dirty = bool(run(["status", "--porcelain"]).stdout.strip())
+
+        created = run(["checkout", "-b", backup_name])
+        if created.returncode != 0:
+            return None, (created.stderr.strip() or created.stdout.strip()
+                          or "Could not create the backup branch.")
+
+        if dirty:
+            run(["add", "-A"])
+            committed = run(["commit", "-m", f"Backup before force sync ({stamp})"])
+            if committed.returncode != 0:
+                # Roll back the half-made backup and abort, so we never sync
+                # believing the work was saved when it wasn't.
+                run(["checkout", "-f", original])
+                run(["branch", "-D", backup_name])
+                return None, ("Could not commit your changes to the backup branch:\n"
+                              + (committed.stderr.strip() or committed.stdout.strip()
+                                 or "unknown error")
+                              + "\n\n(Is git user.name / user.email configured?)")
+
+        back = run(["checkout", original])
+        if back.returncode != 0:
+            return None, (f"Work was saved to '{backup_name}', but returning to "
+                          f"'{original}' failed:\n{back.stderr.strip()}")
+
+        return backup_name, None
 
     def perform_atomic_overwrite(self, remote_ref):
         wx.BeginBusyCursor()
@@ -1174,7 +1280,7 @@ class CommandCenterDialog(wx.Dialog):
                     dangerous_exts = ('.kicad_pcb', '.kicad_sch', '.kicad_pro', '.kicad_prl')
                     has_dangerous = any(f.endswith(dangerous_exts) for f in changed_files)
                     if not has_dangerous:
-                        subprocess.run([self.git_cmd, "-C", self.project_dir, "pull", "--rebase", "-X", "theirs", "origin", branch], 
+                        subprocess.run([self.git_cmd, "-C", self.project_dir, "pull", "--rebase", "-X", "ours", "origin", branch], 
                                        creationflags=CREATE_NO_WINDOW)
                     else:
                         print("Silent pull aborted: Remote KiCad changes detected.")
@@ -1250,4 +1356,5 @@ class CommandCenterDialog(wx.Dialog):
             wx.MessageBox(f"Failed to open remote URL: {e}", "Error")
 
     def on_close(self, event):
+        self._alive = False
         self.Destroy()

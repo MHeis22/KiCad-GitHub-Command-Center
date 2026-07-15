@@ -192,7 +192,9 @@ class ReadmeGenerator:
                 # DNP List
                 blocks = re.split(r'\(\s*symbol\s+', content)[1:]
                 for block in blocks:
-                    if re.search(r'\(\s*on_board\s+no\s*\)', block) or re.search(r'\(\s*property\s+"dnp".*?"(?:yes|true|1)"', block, re.IGNORECASE):
+                    if (re.search(r'\(\s*dnp\s+yes\s*\)', block)
+                            or re.search(r'\(\s*on_board\s+no\s*\)', block)
+                            or re.search(r'\(\s*property\s+"dnp".*?"(?:yes|true|1)"', block, re.IGNORECASE)):
                         ref_match = re.search(r'\(\s*property\s+"Reference"\s+"([^"]+)"', block)
                         val_match = re.search(r'\(\s*property\s+"Value"\s+"([^"]*)"', block)
                         if ref_match:

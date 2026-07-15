@@ -65,8 +65,10 @@ class BOMGenerator:
         """Detailed BOM for human review."""
         groups = {}
         for ref, data in bom.items():
-            # Signature for grouping preventing identical parts from splitting
-            sig = (data['val'], data['fp'], data.get('mpn', ''), data.get('desc', ''))
+            # Signature for grouping preventing identical parts from splitting.
+            # DNP is part of the signature so populated and Do-Not-Populate parts
+            # that are otherwise identical stay on separate rows.
+            sig = (data['val'], data['fp'], data.get('mpn', ''), data.get('desc', ''), data.get('dnp', False))
             if sig not in groups:
                 groups[sig] = {'refs': [], 'data': data}
             groups[sig]['refs'].append(ref)
@@ -76,15 +78,15 @@ class BOMGenerator:
 
         with open(path, 'w', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
-            writer.writerow(['Qty', 'Reference', 'Value', 'Footprint', self.mpn_field, 'Description'])
-            
+            writer.writerow(['Qty', 'Reference', 'Value', 'Footprint', self.mpn_field, 'Description', 'DNP'])
+
             # Sort references within each group natively
             for item in groups.values():
                 item['refs'].sort(key=self._natural_sort_key)
-                
+
             # Sort groups by the first reference in each group
             sorted_groups = sorted(groups.values(), key=lambda g: self._natural_sort_key(g['refs'][0]))
-            
+
             for item in sorted_groups:
                 writer.writerow([
                     len(item['refs']),
@@ -92,21 +94,29 @@ class BOMGenerator:
                     item['data']['val'],
                     item['data']['fp'],
                     item['data'].get('mpn', ''),
-                    item['data'].get('desc', '')
+                    item['data'].get('desc', ''),
+                    'DNP' if item['data'].get('dnp') else ''
                 ])
 
     def _write_distributor_bom(self, path, bom):
-        """Compact BOM for automated tool uploads."""
+        """Compact BOM for automated tool uploads.
+
+        DNP parts are kept so the BOM is complete, but flagged in a 'DNP' column
+        so whoever orders/assembles knows not to populate them (and populated vs.
+        DNP parts sharing an MPN are never merged into one row)."""
         groups = {}
         for ref, data in bom.items():
             mpn = data.get('mpn', '').strip()
             if not mpn:
                 continue # Skip parts with no MPN for distributor BOM
-                
-            # Signature includes Value & Footprint to prevent merging DIFFERENT parts that share "NO_MPN"
-            sig = (data['val'], data['fp'], mpn)
+
+            dnp = data.get('dnp', False)
+            # Signature includes Value & Footprint to prevent merging DIFFERENT
+            # parts that share "NO_MPN", and DNP so a populated part and its DNP
+            # twin stay on separate rows.
+            sig = (data['val'], data['fp'], mpn, dnp)
             if sig not in groups:
-                groups[sig] = {'refs': [], 'mpn': mpn}
+                groups[sig] = {'refs': [], 'mpn': mpn, 'dnp': dnp}
             groups[sig]['refs'].append(ref)
 
         if not groups:
@@ -114,18 +124,19 @@ class BOMGenerator:
 
         with open(path, 'w', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
-            writer.writerow(['Qty', 'Reference', self.mpn_field])
-            
+            writer.writerow(['Qty', 'Reference', self.mpn_field, 'DNP'])
+
             # Sort references within each group natively
             for item in groups.values():
                 item['refs'].sort(key=self._natural_sort_key)
-                
+
             # Sort groups by the first reference in each group
             sorted_groups = sorted(groups.values(), key=lambda g: self._natural_sort_key(g['refs'][0]))
-            
+
             for item in sorted_groups:
                 writer.writerow([
                     len(item['refs']),
                     ", ".join(item['refs']),
-                    item['mpn']
+                    item['mpn'],
+                    'DNP' if item['dnp'] else ''
                 ])

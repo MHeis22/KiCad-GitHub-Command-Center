@@ -6,6 +6,7 @@ import json
 import base64
 import gzip
 import re
+import html
 
 class DiffWindow:
     def __init__(self, diffs, summary_text, target_name="HEAD", kicad_version="Unknown KiCad Version", colorblind=False):
@@ -117,14 +118,25 @@ class DiffWindow:
         with open(template_path, 'r', encoding='utf-8') as f:
             html_content = f.read()
 
+        # target_name and kicad_version are user-controlled — a compare target can
+        # be a commit subject containing quotes, </script>, or angle brackets — so
+        # escape each per its destination context: HTML-escape where injected as
+        # HTML text, JSON-encode where injected into a JS string literal (the
+        # extra </ -> <\/ guard stops a "</script>" in the value from closing the
+        # inline <script> block).
+        target_name_js = json.dumps(str(self.target_name)).replace('</', '<\\/')
+
         # Inject Python variables in a single pass to avoid scanning large strings multiple times
         _replacements = {
             '__COLORBLIND_CLASS__': colorblind_class,
-            '__TARGET_NAME__': self.target_name,
-            '__KICAD_VERSION__': self.kicad_version,
+            '__TARGET_NAME__': html.escape(str(self.target_name)),
+            '__TARGET_NAME_JS__': target_name_js,
+            '__KICAD_VERSION__': html.escape(str(self.kicad_version)),
             '__DIFF_B64_GZIP__': b64_compressed,
         }
-        _pattern = re.compile('|'.join(re.escape(k) for k in _replacements))
+        # Match longer placeholders first so '__TARGET_NAME_JS__' is never shadowed
+        # by a partial '__TARGET_NAME__' match.
+        _pattern = re.compile('|'.join(re.escape(k) for k in sorted(_replacements, key=len, reverse=True)))
         html_content = _pattern.sub(lambda m: _replacements[m.group(0)], html_content)
 
         with open(html_path, 'w', encoding='utf-8') as f:

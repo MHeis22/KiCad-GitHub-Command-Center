@@ -6,7 +6,9 @@ import shutil
 import difflib
 import re
 import glob
+import time
 import hashlib
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from .utils import CREATE_NO_WINDOW, find_kicad_cli
 from .kicad_parser import (
@@ -22,6 +24,10 @@ class DiffEngine:
         self.tmp_dir = os.path.join(tempfile.gettempdir(), "kicad_git_diff")
         os.makedirs(self.tmp_dir, exist_ok=True)
 
+        # Old SVG/HTML artifacts from previous sessions pile up here forever
+        # (a multilayer board can leave hundreds of MB), so sweep stale ones now.
+        self._prune_temp_dir()
+
         self.kicad_cli = find_kicad_cli()
         self.git_cmd = "git.exe" if os.name == "nt" else "git"
         # {(file_md5, layer, is_pcb): svg_out_path} — avoids re-exporting unchanged files
@@ -31,6 +37,21 @@ class DiffEngine:
         # key means a commit/checkout (which moves the ref) auto-invalidates it,
         # and the mtime/size means a re-saved working file does too.
         self._content_cache = {}
+
+    def _prune_temp_dir(self, max_age_days=7):
+        """Deletes files in the diff temp folder older than max_age_days so the
+        cache of exported SVGs doesn't grow without bound across sessions."""
+        try:
+            cutoff = time.time() - max_age_days * 86400
+            for name in os.listdir(self.tmp_dir):
+                path = os.path.join(self.tmp_dir, name)
+                try:
+                    if os.path.isfile(path) and os.path.getmtime(path) < cutoff:
+                        os.remove(path)
+                except OSError:
+                    pass
+        except OSError:
+            pass
 
     def get_kicad_version(self):
         """Fetches the installed KiCad version via CLI."""
@@ -50,8 +71,12 @@ class DiffEngine:
         different order on nearly every save, producing large diffs with zero
         real design change. Stripping each line and sorting collapses that
         reordering/re-indentation noise while still reflecting any genuine
-        content change (added/removed/edited lines alter the multiset)."""
-        return sorted(line.strip() for line in text.splitlines() if line.strip())
+        content change (added/removed/edited lines alter the multiset).
+
+        A Counter (line -> count) is an order-independent multiset compared in
+        O(n); it replaces an earlier sort, which was O(n log n) and allocated a
+        full list — a real cost on multi-megabyte boards checked repeatedly."""
+        return Counter(line.strip() for line in text.splitlines() if line.strip())
 
     def _resolve_target_sha(self, target):
         """Resolves a target (HEAD, branch, commit-ish) to a commit SHA, or None.
@@ -146,8 +171,21 @@ class DiffEngine:
                     parts = line.split('\t')
                     if len(parts) >= 2:
                         code = parts[0].strip()
-                        fname = parts[1].strip().strip('"')
-                        status_dict[fname] = code
+                        # Renames/copies are "R100\told\tnew" (or C...): the file
+                        # that exists in the working tree is the LAST field. Using
+                        # parts[1] (the old path) meant the new file was never
+                        # tracked or staged. Record the new path, and for a rename
+                        # also record the old path's deletion so committing the
+                        # pair actually completes the move (git re-detects it).
+                        if code and code[0] in ('R', 'C') and len(parts) >= 3:
+                            new_path = parts[2].strip().strip('"')
+                            status_dict[new_path] = code[0]
+                            if code[0] == 'R':
+                                old_path = parts[1].strip().strip('"')
+                                status_dict.setdefault(old_path, 'D')
+                        else:
+                            fname = parts[1].strip().strip('"')
+                            status_dict[fname] = code
 
             # 2. Catch untracked files and staged files that might be missed if HEAD doesn't exist
             res_untracked = subprocess.run([self.git_cmd, "-C", self.project_dir, "status", "--porcelain"],
@@ -155,9 +193,20 @@ class DiffEngine:
             for line in res_untracked.stdout.split('\n'):
                 if len(line) > 2:
                     code = line[:2].strip()
-                    fname = line[3:].strip().strip('"')
-                    if fname not in status_dict:
-                        status_dict[fname] = code
+                    rest = line[3:].strip()
+                    # Porcelain renames read "R  old -> new"; keep the new path
+                    # (and the old path's deletion) so it commits as a real move.
+                    if code and code[0] in ('R', 'C') and ' -> ' in rest:
+                        old_part, new_part = rest.split(' -> ', 1)
+                        new_path = new_part.strip().strip('"')
+                        if new_path not in status_dict:
+                            status_dict[new_path] = code[0]
+                        if code[0] == 'R':
+                            status_dict.setdefault(old_part.strip().strip('"'), 'D')
+                    else:
+                        fname = rest.strip().strip('"')
+                        if fname not in status_dict:
+                            status_dict[fname] = code
         except Exception:
             pass
         return status_dict
@@ -345,11 +394,21 @@ class DiffEngine:
     def render_all_diffs(self, show_unchanged=False, compare_target="HEAD", run_drc=False, progress_callback=None):
         """
         Scans for .kicad_pcb and .kicad_sch. Exports visual, logical files, and optionally DRC.
-        progress_callback(current, total, filename) is called before each file is processed.
+        progress_callback(current, total, label) reports task-level progress.
+
+        Runs in three phases so that every file's heavy kicad-cli work shares ONE
+        thread pool instead of each file getting its own sequential pool:
+          A. per-file setup (export the git-reference copy, build the CLI task
+             list) — cheap, sequential;
+          B. run all CLI tasks (SVG/netlist/DRC) across all files concurrently;
+          C. assemble each diff, doing the pcbnew-based extraction (LoadBoard is
+             NOT thread-safe) sequentially on this thread.
+        For a project with several sheets this cuts wall-clock roughly by the
+        number of files, since previously the files ran one after another.
         """
         actual_target = compare_target.split(' ')[0] if ' ' in compare_target else compare_target
         git_status = self.get_git_status(target=actual_target)
-        
+
         all_potential = set()
         for fname in os.listdir(self.project_dir):
             if fname.endswith('.kicad_pcb') or fname.endswith('.kicad_sch'):
@@ -357,59 +416,60 @@ class DiffEngine:
         for fname in git_status.keys():
             if fname.endswith('.kicad_pcb') or fname.endswith('.kicad_sch'):
                 all_potential.add(fname)
-                
-        target_files = sorted(list(all_potential), key=lambda x: (0 if x.endswith('.kicad_pcb') else 1, x))
-        
-        diffs = []
-        summary_lines = []
-        total_files = len(target_files)
 
+        target_files = sorted(list(all_potential), key=lambda x: (0 if x.endswith('.kicad_pcb') else 1, x))
+
+        summary_lines = []
+        contexts = []          # per-file state carried from phase A to phase C
+        all_tasks = []         # every CLI task across every file (one shared pool)
+
+        # ---- Phase A: per-file setup + task assembly (sequential, cheap) ----
         for file_idx, fname in enumerate(target_files):
-            if progress_callback:
-                progress_callback(file_idx + 1, total_files, fname)
             file_path = os.path.join(self.project_dir, fname)
             status_code = git_status.get(fname)
-            
+
             if status_code in ['M', 'T']: status_text = "Modified"
             elif status_code in ['A', '??']: status_text = "New/Untracked"
             elif status_code == 'D': status_text = "Deleted"
             else: status_text = "Unchanged"
-            
+
             if status_text == "Unchanged" and not show_unchanged:
                 continue
-                
+
             summary_lines.append(f"{fname}: {status_text}")
-            safe_name = fname.replace('.', '_')
+            # fname can be a repo-relative path with subfolders (e.g.
+            # "boards/main.kicad_pcb"). Flatten separators for tmp_dir output
+            # names so they don't imply a nonexistent subdirectory, and place the
+            # git-reference temp copy next to the real file so its sibling
+            # .kicad_pro / library tables still resolve.
             is_pcb = fname.endswith('.kicad_pcb')
-            base_name = os.path.splitext(fname)[0]
-            
-            old_board_tmp = os.path.join(self.project_dir, f"tmp_git_old_{fname}")
-            old_base_name = f"tmp_git_old_{base_name}"
-            
-            expected_pro = os.path.join(self.project_dir, f"{base_name}.kicad_pro")
+            file_dir = os.path.dirname(file_path)
+            fname_only = os.path.basename(fname)
+            base_only = os.path.splitext(fname_only)[0]
+            safe_name = fname.replace('.', '_').replace('/', '_').replace('\\', '_')
+
+            old_board_tmp = os.path.join(file_dir, f"tmp_git_old_{fname_only}")
+            old_base_name = f"tmp_git_old_{base_only}"
+
+            expected_pro = os.path.join(file_dir, f"{base_only}.kicad_pro")
             pro_path = expected_pro if os.path.exists(expected_pro) else None
             if not pro_path:
-                pro_files = glob.glob(os.path.join(self.project_dir, "*.kicad_pro"))
+                pro_files = glob.glob(os.path.join(file_dir, "*.kicad_pro"))
                 if pro_files: pro_path = pro_files[0]
-                
+
             old_pro_tmp = None
             if pro_path:
-                old_pro_tmp = os.path.join(self.project_dir, f"{old_base_name}.kicad_pro")
-            
+                old_pro_tmp = os.path.join(file_dir, f"{old_base_name}.kicad_pro")
+
             layers_to_export = ["Default"]
             if is_pcb:
                 layers_to_export = get_pcb_layers(file_path)
-            
-            visuals = {layer: {"curr": None, "old": None} for layer in layers_to_export}
-            netlist_diff = ""
-            bom_data = {"curr": {}, "old": {}}
-            pcb_logic_diff = ""
-            health_data = {"new": [], "resolved": [], "unresolved": []}
-            dims_data = {"curr": None, "old": None}
 
+            visuals = {layer: {"curr": None, "old": None} for layer in layers_to_export}
+
+            # Export the git-reference version of this file to disk (fast).
+            has_old = False
             try:
-                # 1. Export Git Reference version to disk (Synchronous, extremely fast)
-                has_old = False
                 if status_code != 'A' and status_code != '??':
                     with open(old_board_tmp, "wb") as f:
                         res = subprocess.run([self.git_cmd, "-C", self.project_dir, "show", f"{actual_target}:{fname}"],
@@ -418,78 +478,103 @@ class DiffEngine:
                         has_old = True
                         if pro_path:
                             shutil.copy2(pro_path, old_pro_tmp)
+            except Exception as e:
+                print(f"Error exporting reference for {fname}: {e}")
 
-                # ==============================================================
-                # 2. Setup Parallel Tasks
-                # ==============================================================
-                tasks = []
+            # SVG Export Tasks
+            for layer in layers_to_export:
+                ext = "svg"
+                layer_safe = layer.replace('.', '_')
 
-                # SVG Export Tasks
-                for layer in layers_to_export:
-                    ext = "svg"
-                    layer_safe = layer.replace('.', '_')
-                    
-                    curr_out = os.path.join(self.tmp_dir, f"curr_{safe_name}_{layer_safe}.{ext}")
-                    old_out = os.path.join(self.tmp_dir, f"old_{safe_name}_{layer_safe}.{ext}")
-                    
-                    cli_args = [self.kicad_cli, "pcb" if is_pcb else "sch", "export", ext]
-                    if is_pcb:
-                        active_layers = layer
-                        if layer != "Edge.Cuts":
-                            active_layers += ",Edge.Cuts"
-                        cli_args.extend(["--layers", active_layers, "--exclude-drawing-sheet"])
-                    else:
-                        cli_args.extend(["--exclude-drawing-sheet"])
-                    
-                    if status_text != "Deleted":
-                        tasks.append({'type': 'svg', 'layer': layer, 'version': 'curr', 'cli_args': cli_args, 'file_path': file_path, 'out_path': curr_out, 'is_pcb': is_pcb, 'base_name': base_name})
+                curr_out = os.path.join(self.tmp_dir, f"curr_{safe_name}_{layer_safe}.{ext}")
+                old_out = os.path.join(self.tmp_dir, f"old_{safe_name}_{layer_safe}.{ext}")
 
-                    if has_old:
-                        tasks.append({'type': 'svg', 'layer': layer, 'version': 'old', 'cli_args': cli_args, 'file_path': old_board_tmp, 'out_path': old_out, 'is_pcb': is_pcb, 'base_name': old_base_name})
+                cli_args = [self.kicad_cli, "pcb" if is_pcb else "sch", "export", ext]
+                if is_pcb:
+                    active_layers = layer
+                    if layer != "Edge.Cuts":
+                        active_layers += ",Edge.Cuts"
+                    cli_args.extend(["--layers", active_layers, "--exclude-drawing-sheet"])
+                else:
+                    cli_args.extend(["--exclude-drawing-sheet"])
 
-                # Netlist Tasks
-                curr_net = None
-                old_net = None
-                if not is_pcb:
-                    if status_text != "Deleted":
-                        curr_net = os.path.join(self.tmp_dir, f"curr_{safe_name}.net")
-                        tasks.append({'type': 'netlist', 'version': 'curr', 'cli_args': [self.kicad_cli, "sch", "export", "netlist", file_path, "--output", curr_net], 'out_path': curr_net})
-                    if has_old:
-                        old_net = os.path.join(self.tmp_dir, f"old_{safe_name}.net")
-                        tasks.append({'type': 'netlist', 'version': 'old', 'cli_args': [self.kicad_cli, "sch", "export", "netlist", old_board_tmp, "--output", old_net], 'out_path': old_net})
+                if status_text != "Deleted":
+                    all_tasks.append({'type': 'svg', 'file_id': file_idx, 'fname': fname, 'layer': layer, 'version': 'curr', 'cli_args': cli_args, 'file_path': file_path, 'out_path': curr_out, 'is_pcb': is_pcb, 'base_name': base_only})
 
-                # DRC Tasks (PCB only)
-                if run_drc and is_pcb:
-                    if status_text != "Deleted":
-                        tasks.append({'type': 'drc', 'version': 'curr', 'file_path': file_path, 'is_pcb': is_pcb})
-                    if has_old:
-                        tasks.append({'type': 'drc', 'version': 'old', 'file_path': old_board_tmp, 'is_pcb': is_pcb})
+                if has_old:
+                    all_tasks.append({'type': 'svg', 'file_id': file_idx, 'fname': fname, 'layer': layer, 'version': 'old', 'cli_args': cli_args, 'file_path': old_board_tmp, 'out_path': old_out, 'is_pcb': is_pcb, 'base_name': old_base_name})
 
-                # ==============================================================
-                # 3. Execute all Heavy CLI tasks simultaneously via ThreadPool
-                # ==============================================================
-                curr_health, old_health = [], []
-                
-                # Cap threads to prevent RAM spikes on large boards (max 12 threads = ~1.5GB RAM usage)
-                max_workers = min(12, (os.cpu_count() or 4))
-                
-                with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                    futures = [executor.submit(self._run_cmd_task, t) for t in tasks]
-                    for future in as_completed(futures):
-                        res = future.result()
-                        if not res: continue
-                        
-                        if res['type'] == 'svg':
-                            visuals[res['layer']][res['version']] = res['result']
-                        elif res['type'] == 'drc':
-                            if res['version'] == 'curr':
-                                curr_health = res['result'] or []
-                            else:
-                                old_health = res['result'] or []
+            # Netlist Tasks (schematic only)
+            curr_net = None
+            old_net = None
+            if not is_pcb:
+                if status_text != "Deleted":
+                    curr_net = os.path.join(self.tmp_dir, f"curr_{safe_name}.net")
+                    all_tasks.append({'type': 'netlist', 'file_id': file_idx, 'fname': fname, 'version': 'curr', 'cli_args': [self.kicad_cli, "sch", "export", "netlist", file_path, "--output", curr_net], 'out_path': curr_net})
+                if has_old:
+                    old_net = os.path.join(self.tmp_dir, f"old_{safe_name}.net")
+                    all_tasks.append({'type': 'netlist', 'file_id': file_idx, 'fname': fname, 'version': 'old', 'cli_args': [self.kicad_cli, "sch", "export", "netlist", old_board_tmp, "--output", old_net], 'out_path': old_net})
 
-                # ==============================================================
-                # 4. Handle Logical Extraction
-                # ==============================================================
+            # DRC Tasks (PCB only)
+            if run_drc and is_pcb:
+                if status_text != "Deleted":
+                    all_tasks.append({'type': 'drc', 'file_id': file_idx, 'fname': fname, 'version': 'curr', 'file_path': file_path, 'is_pcb': is_pcb})
+                if has_old:
+                    all_tasks.append({'type': 'drc', 'file_id': file_idx, 'fname': fname, 'version': 'old', 'file_path': old_board_tmp, 'is_pcb': is_pcb})
+
+            contexts.append({
+                'file_id': file_idx, 'fname': fname, 'status_text': status_text,
+                'is_pcb': is_pcb, 'file_path': file_path,
+                'old_board_tmp': old_board_tmp, 'old_pro_tmp': old_pro_tmp, 'has_old': has_old,
+                'visuals': visuals, 'curr_net': curr_net, 'old_net': old_net,
+                'curr_health': [], 'old_health': [],
+            })
+
+        # ---- Phase B: run every CLI task across all files in one shared pool ----
+        contexts_by_id = {c['file_id']: c for c in contexts}
+        total_tasks = len(all_tasks)
+        if total_tasks:
+            # Cap threads to prevent RAM spikes on large boards (max 12 threads = ~1.5GB RAM usage)
+            max_workers = min(12, (os.cpu_count() or 4))
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = [executor.submit(self._run_cmd_task, t) for t in all_tasks]
+                done = 0
+                for future in as_completed(futures):
+                    res = future.result()
+                    done += 1
+                    if progress_callback:
+                        progress_callback(done, total_tasks, res.get('fname', '') if res else '')
+                    if not res:
+                        continue
+                    ctx = contexts_by_id.get(res.get('file_id'))
+                    if ctx is None:
+                        continue
+                    if res['type'] == 'svg':
+                        if res['layer'] in ctx['visuals']:
+                            ctx['visuals'][res['layer']][res['version']] = res['result']
+                    elif res['type'] == 'drc':
+                        if res['version'] == 'curr':
+                            ctx['curr_health'] = res['result'] or []
+                        else:
+                            ctx['old_health'] = res['result'] or []
+
+        # ---- Phase C: logical extraction + assembly (sequential; pcbnew) ----
+        diffs = []
+        for ctx in contexts:
+            fname = ctx['fname']
+            is_pcb = ctx['is_pcb']
+            has_old = ctx['has_old']
+            file_path = ctx['file_path']
+            old_board_tmp = ctx['old_board_tmp']
+            status_text = ctx['status_text']
+
+            netlist_diff = ""
+            bom_data = {"curr": {}, "old": {}}
+            pcb_logic_diff = ""
+            health_data = {"new": [], "resolved": [], "unresolved": []}
+            dims_data = {"curr": None, "old": None}
+
+            try:
                 if is_pcb:
                     dims_data["curr"] = get_pcb_dimensions(file_path)
 
@@ -507,20 +592,20 @@ class DiffEngine:
                 if not is_pcb:
                     if status_text != "Deleted":
                         bom_data["curr"] = get_bom_data(file_path)
-                    
+
                     if has_old:
                         bom_data["old"] = get_bom_data(old_board_tmp)
-                        if curr_net and old_net:
-                            netlist_diff = self._generate_text_diff(old_net, curr_net)
+                        if ctx['curr_net'] and ctx['old_net']:
+                            netlist_diff = self._generate_text_diff(ctx['old_net'], ctx['curr_net'])
 
                 # Extract TODOs
                 curr_todos = extract_todos(file_path) if status_text != "Deleted" else []
                 old_todos = extract_todos(old_board_tmp) if has_old else []
-                
+
                 # Format DRC Diffs
                 if run_drc:
-                    old_set = set(old_health)
-                    curr_set = set(curr_health)
+                    old_set = set(ctx['old_health'])
+                    curr_set = set(ctx['curr_health'])
                     health_data = {
                         "resolved": sorted(list(old_set - curr_set)),
                         "new": sorted(list(curr_set - old_set)),
@@ -530,7 +615,7 @@ class DiffEngine:
                 diffs.append({
                     "name": fname,
                     "status": status_text,
-                    "visuals": visuals,
+                    "visuals": ctx['visuals'],
                     "netlist_diff": netlist_diff,
                     "bom_data": bom_data,
                     "pcb_logic_diff": pcb_logic_diff,
@@ -541,15 +626,15 @@ class DiffEngine:
                     "health": health_data,
                     "dimensions": dims_data
                 })
-                
+
             except Exception as e:
-                print(f"Error rendering {fname}: {e}")
+                print(f"Error assembling diff for {fname}: {e}")
             finally:
                 if os.path.exists(old_board_tmp):
                     try: os.remove(old_board_tmp)
                     except OSError: pass
-                if old_pro_tmp and os.path.exists(old_pro_tmp):
-                    try: os.remove(old_pro_tmp)
+                if ctx['old_pro_tmp'] and os.path.exists(ctx['old_pro_tmp']):
+                    try: os.remove(ctx['old_pro_tmp'])
                     except OSError: pass
 
         summary = "\n".join(summary_lines) if summary_lines else "No files found."

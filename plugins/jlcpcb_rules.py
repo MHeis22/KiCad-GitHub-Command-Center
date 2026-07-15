@@ -20,14 +20,14 @@ def set_jlcpcb_constraints(parent_window):
             min_track = 0.127      # 5 mil (Free)
             min_clearance = 0.127  
             min_via_drill = 0.3    # JLCPCB absolute cheapest via
-            min_via_pad = 0.40     # 0.40mm pad is the smallest free one
+            min_via_pad = 0.45     # 0.45mm dia at a 0.3mm drill -> the 0.075mm min annular ring (JLC cheapest via)
             alt_info = "Tip: JLCPCB allows smaller 0.09mm tracks on 4+ layers for free."
         else:
             tier_info = f"{layer_count}-Layer Economic Tier"
             min_track = 0.09       # 3.5 mil (Free for Multilayer)
             min_clearance = 0.09   
             min_via_drill = 0.3    # Maintained at 0.3mm to ensure the $2 promotional price
-            min_via_pad = 0.40     # 0.40mm pad is the smallest free one
+            min_via_pad = 0.45     # 0.45mm dia at a 0.3mm drill -> the 0.075mm min annular ring (JLC cheapest via)
             alt_info = "Note: While JLC technically supports 0.15mm vias on 4-layers, using 0.3mm vias guarantees you qualify for the absolute cheapest promotional price ($2 tier)."
 
         msg = (
