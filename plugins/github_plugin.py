@@ -23,5 +23,12 @@ class GithubActionPlugin(pcbnew.ActionPlugin):
             wx.MessageBox("Save the board first.")
             return
             
-        dlg = CommandCenterDialog(None, os.path.dirname(path))
-        dlg.ShowModal()
+        # Parent to the PCB editor so the modal dialog stays in front of it
+        # (an ownerless modal can end up behind the editor on macOS, which
+        # looks exactly like KiCad being frozen).
+        parent = wx.FindWindowByName("PcbFrame")
+        dlg = CommandCenterDialog(parent, os.path.dirname(path))
+        try:
+            dlg.ShowModal()
+        finally:
+            dlg.Destroy()

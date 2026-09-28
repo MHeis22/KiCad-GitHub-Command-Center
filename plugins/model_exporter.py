@@ -3,7 +3,7 @@ import re
 import glob
 import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from .utils import CREATE_NO_WINDOW, find_kicad_cli
+from .utils import CREATE_NO_WINDOW, find_kicad_cli, project_files
 
 # kicad-cli 'pcb render' was introduced in KiCad 9.0 (dev 8.99).
 # STEP export ('pcb export step') has been available since KiCad 7.0.
@@ -45,7 +45,7 @@ class Model3DExporter:
 
     def _find_pcb(self):
         """Returns the first .kicad_pcb in the project, or None."""
-        pcb_files = glob.glob(os.path.join(self.project_dir, "*.kicad_pcb"))
+        pcb_files = project_files(self.project_dir, ".kicad_pcb")
         return pcb_files[0] if pcb_files else None
 
     def step_output_exists(self):
@@ -198,12 +198,14 @@ class Model3DExporter:
         out_name = f"{base}_{side}{self.DIM_SUFFIX}.png"
         # 2x-size dimension text, scaled with render width so it stays legible.
         text_px = max(48, int(width / 26))
-        result = annot.annotate(src, side=side,
-                                out_path=os.path.join(out_dir, out_name), text_px=text_px)
         try:
-            os.remove(src)
-        except OSError:
-            pass
+            result = annot.annotate(src, side=side,
+                                    out_path=os.path.join(out_dir, out_name), text_px=text_px)
+        finally:
+            try:
+                os.remove(src)
+            except OSError:
+                pass
         return f"{self.IMAGE_SUBDIR}/{out_name}" if result else None
 
     def render_image(self, side=None):

@@ -1,7 +1,7 @@
 import os
 import glob
 import subprocess
-from .utils import CREATE_NO_WINDOW, find_kicad_cli
+from .utils import CREATE_NO_WINDOW, find_kicad_cli, project_files
 
 
 class SchematicExporter:
@@ -36,7 +36,7 @@ class SchematicExporter:
     def _find_root_schematic(self):
         """Returns the root .kicad_sch (the one matching the project name when
         possible, otherwise the first found), or None."""
-        sch_files = glob.glob(os.path.join(self.project_dir, "*.kicad_sch"))
+        sch_files = project_files(self.project_dir, ".kicad_sch")
         if not sch_files:
             return None
         base = self._project_base()

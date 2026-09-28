@@ -58,16 +58,34 @@ def _make_action_button(parent, label, light=None, dark=None, size=(-1, 40)):
         btn.SetForegroundColour(_action_text_colour())
     return btn
 
-from .utils import CREATE_NO_WINDOW, load_settings, save_settings, get_last_target, save_last_target
+from .utils import (CREATE_NO_WINDOW, git_network_kwargs, project_files, load_settings, save_settings,
+                    get_last_target, save_last_target, load_project_settings, save_project_settings)
 from .ui_dialogs import SettingsDialog, CommitDialog, Model3DSettingsDialog
 from .diff_engine import DiffEngine
 from .diff_window import DiffWindow
 from .readme_generator import ReadmeGenerator
 from .bom_generator import BOMGenerator
+from .bom_dialogs import BOMOptionsDialog, BOMReportDialog
 from .jlcpcb_exporter import JLCPCBExporter
 from .model_exporter import Model3DExporter
 from .schematic_exporter import SchematicExporter
 from .jlcpcb_rules import set_jlcpcb_constraints
+
+class _no_busy_cursor:
+    """Temporarily clears the (nestable) busy cursor so a modal dialog shown
+    in the middle of a long operation gets a normal pointer."""
+    def __enter__(self):
+        self.depth = 0
+        while wx.IsBusy():
+            wx.EndBusyCursor()
+            self.depth += 1
+        return self
+
+    def __exit__(self, *exc):
+        for _ in range(self.depth):
+            wx.BeginBusyCursor()
+        return False
+
 
 class CommandCenterDialog(wx.Dialog):
     def __init__(self, parent, project_dir):
@@ -226,20 +244,28 @@ class CommandCenterDialog(wx.Dialog):
         btn_remote = wx.Button(self.scroll_panel, label="Open Remote Web Page", size=(-1, 40))
         btn_remote.Bind(wx.EVT_BUTTON, self.on_open_remote)
 
-        btn_sync = _make_action_button(self.scroll_panel, "Download from Server (Force Sync)", (255, 200, 200), (160, 50, 50))
+        btn_pull = _make_action_button(self.scroll_panel, "Pull Changes from Server")
+        btn_pull.SetToolTip("Downloads new commits from the server and merges them in, "
+                            "keeping your own commits and uncommitted work.")
+        btn_pull.Bind(wx.EVT_BUTTON, self.on_pull)
+
+        btn_sync = _make_action_button(self.scroll_panel, "Force Download from Server (discard local)", (255, 200, 200), (160, 50, 50))
+        btn_sync.SetToolTip("Replaces your local copy with the server version. "
+                            "Offers to back up your current work to a branch first.")
         btn_sync.Bind(wx.EVT_BUTTON, self.on_force_sync)
 
         sizer_remote.Add(self.btn_push, flag=wx.EXPAND | wx.ALL, border=5)
+        sizer_remote.Add(btn_pull, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=5)
         sizer_remote.Add(btn_remote, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=5)
         sizer_remote.Add(btn_sync, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=5)
         self.scroll_vbox.Add(sizer_remote, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=10)
 
         # --- Help Text ---
-        help_box = wx.StaticBox(self.scroll_panel, label="Force Sync Instructions")
+        help_box = wx.StaticBox(self.scroll_panel, label="After Pulling or Syncing")
         help_sizer = wx.StaticBoxSizer(help_box, wx.VERTICAL)
         help_text = (
-            "TO SEE CHANGES AFTER FORCE SYNC/SWITCH/POP:\n"
-            "1. Run 'Download from Server (Force Sync)'.\n"
+            "TO SEE CHANGES AFTER PULL/FORCE SYNC/SWITCH/POP:\n"
+            "1. Run 'Pull Changes from Server' (or Force Download).\n"
             "2. Close your PCB and Schematic editor.\n"
             "3. If KiCad asks to save, select 'DISCARD CHANGES'.\n"
             "4. Re-open the file to see the loaded version."
@@ -260,6 +286,7 @@ class CommandCenterDialog(wx.Dialog):
         btn_settings.Bind(wx.EVT_BUTTON, self.on_settings)
         btn_close = wx.Button(self.main_panel, label="Close")
         btn_close.Bind(wx.EVT_BUTTON, self.on_close)
+        self.Bind(wx.EVT_CLOSE, self.on_close)
         
         bottom_sizer.Add(btn_settings, flag=wx.LEFT, border=15)
         bottom_sizer.AddStretchSpacer()
@@ -329,6 +356,8 @@ class CommandCenterDialog(wx.Dialog):
             pass  # silently ignore network errors on startup
 
     def _show_update_prompt(self, current, latest, release_url):
+        if not self._alive:
+            return
         msg = (
             f"A new version of GitHub Command Center is available!\n\n"
             f"  Installed: v{current}\n"
@@ -831,16 +860,17 @@ class CommandCenterDialog(wx.Dialog):
             if wx.IsBusy(): wx.EndBusyCursor()
             self.update_git_status()
 
-    def on_force_sync(self, event):
+    def on_force_sync(self, event, default_target=None):
         if not os.path.isdir(os.path.join(self.project_dir, ".git")):
             wx.MessageBox("No Git repo found.", "Error")
             return
 
-        res_br = subprocess.run([self.git_cmd, "-C", self.project_dir, "branch", "--show-current"], 
-                                capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
-        curr = res_br.stdout.strip() or "main"
+        if not default_target:
+            res_br = subprocess.run([self.git_cmd, "-C", self.project_dir, "branch", "--show-current"], 
+                                    capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
+            default_target = f"origin/{res_br.stdout.strip() or 'main'}"
         
-        dlg = wx.TextEntryDialog(self, "Enter branch to download (e.g. origin/main):", "Force Download", f"origin/{curr}")
+        dlg = wx.TextEntryDialog(self, "Enter branch to download (e.g. origin/main):", "Force Download", default_target)
         if dlg.ShowModal() == wx.ID_OK:
             target = dlg.GetValue().strip()
             if target:
@@ -874,6 +904,11 @@ class CommandCenterDialog(wx.Dialog):
                         finally:
                             if wx.IsBusy(): wx.EndBusyCursor()
 
+                        if err and backup_name:
+                            wx.MessageBox(f"{err}\n\nForce sync was cancelled. Your work is safe "
+                                          f"on branch '{backup_name}'.", "Backup Incomplete", wx.ICON_WARNING)
+                            dlg.Destroy()
+                            return
                         if err:
                             proceed_dlg = wx.MessageDialog(
                                 self,
@@ -897,6 +932,168 @@ class CommandCenterDialog(wx.Dialog):
 
                     self.perform_atomic_overwrite(target)
         dlg.Destroy()
+
+    def _git(self, args, network=False):
+        """Runs git in the project; network commands never prompt and time out."""
+        kwargs = git_network_kwargs() if network else {"timeout": 60}
+        return subprocess.run([self.git_cmd, "-C", self.project_dir] + args,
+                              capture_output=True, text=True, encoding="utf-8", errors="replace",
+                              creationflags=CREATE_NO_WINDOW, **kwargs)
+
+    def _git_paths(self, args):
+        """Set of paths printed by a git command run with -z."""
+        res = self._git(args)
+        return {p for p in res.stdout.split("\0") if p} if res.returncode == 0 else set()
+
+    def _offer_force_sync(self, reason, upstream):
+        """Explains why a normal pull can't proceed and offers Force Download."""
+        dlg = wx.MessageDialog(
+            self, reason + "\n\nForce download the server version instead? You can back up "
+            "your current work to a branch first.", "Pull Not Possible",
+            wx.YES_NO | wx.NO_DEFAULT | wx.ICON_WARNING)
+        dlg.SetYesNoLabels("Force Download...", "Cancel")
+        go = dlg.ShowModal() == wx.ID_YES
+        dlg.Destroy()
+        if go:
+            self.on_force_sync(None, default_target=upstream)
+
+    def on_pull(self, event):
+        """Brings in the server's commits without discarding anything local.
+
+        Fast-forwards when there are no local commits; merges otherwise. It
+        refuses (and offers Force Download) when uncommitted edits would be
+        overwritten, or when both sides changed the same schematic/board, since
+        git can't merge KiCad files safely line by line."""
+        if not os.path.isdir(os.path.join(self.project_dir, ".git")):
+            wx.MessageBox("No Git repo found. Please initialize and link first.", "Error")
+            return
+        branch = self._git(["branch", "--show-current"]).stdout.strip()
+        if not branch:
+            wx.MessageBox("You're not on a branch (detached HEAD). Switch to a branch first.", "Pull")
+            return
+
+        self.status_lbl.SetLabel("Status: Fetching from the server...")
+        self.status_lbl.Update()
+        with wx.BusyCursor():
+            try:
+                fetch = self._git(["fetch", "origin"], network=True)
+            except subprocess.TimeoutExpired:
+                fetch = None
+        if fetch is None or fetch.returncode != 0:
+            self.update_git_status()
+            wx.MessageBox("Could not reach the server, nothing was changed:\n\n"
+                          + ((fetch.stderr.strip() if fetch else "") or "The connection timed out.")
+                          + "\n\nCheck your network connection and git credentials.",
+                          "Pull Failed", wx.ICON_ERROR)
+            return
+
+        upstream = self._git(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]).stdout.strip()
+        if not upstream:
+            upstream = f"origin/{branch}"
+        if self._git(["rev-parse", "--verify", "--quiet", upstream]).returncode != 0:
+            self.update_git_status()
+            wx.MessageBox(f"The server has no branch '{upstream}' yet. Push this branch first.", "Pull")
+            return
+
+        counts = self._git(["rev-list", "--left-right", "--count", f"HEAD...{upstream}"]).stdout.split()
+        ahead, behind = (int(counts[0]), int(counts[1])) if len(counts) == 2 else (0, 0)
+        if behind == 0:
+            self.update_git_status()
+            msg = f"Already up to date with {upstream}."
+            if ahead:
+                msg += f"\n\nYou have {ahead} local commit(s) the server doesn't have yet; push them when ready."
+            wx.MessageBox(msg, "Pull")
+            return
+
+        # Paths are repo-root relative in all of these.
+        incoming = self._git_paths(["diff", "--name-only", "-z", f"HEAD...{upstream}"])
+        uncommitted = self._git_paths(["diff", "--name-only", "-z", "HEAD"])
+        untracked = self._git_paths(["ls-files", "--others", "--exclude-standard", "-z", "--full-name"])
+        blocking = sorted((uncommitted | untracked) & incoming)
+
+        if blocking:
+            # .kicad_prl only holds view state (visible layers, zoom), which
+            # KiCad rewrites constantly; it's safe to drop for a pull.
+            if all(p.endswith(".kicad_prl") for p in blocking):
+                dlg = wx.MessageDialog(
+                    self, "The server changed these KiCad view-settings files, which you also "
+                    "changed locally:\n\n- " + "\n- ".join(blocking) + "\n\nThey only store "
+                    "view state such as visible layers. Discard your local version and pull?",
+                    "Pull", wx.YES_NO | wx.ICON_QUESTION)
+                go = dlg.ShowModal() == wx.ID_YES
+                dlg.Destroy()
+                if not go:
+                    return
+                tracked = [p for p in blocking if p in uncommitted]
+                if tracked:
+                    self._git(["checkout", "HEAD", "--"] + tracked)
+                top = self._git(["rev-parse", "--show-toplevel"]).stdout.strip()
+                for p in blocking:
+                    if p in untracked:
+                        try:
+                            os.remove(os.path.join(top, p))
+                        except OSError:
+                            pass
+            else:
+                self.update_git_status()
+                self._offer_force_sync(
+                    "Your uncommitted changes to these files would be overwritten by the "
+                    "incoming changes:\n\n- " + "\n- ".join(blocking) + "\n\nCommit them "
+                    "first to keep them (then pull again to merge), or", upstream)
+                return
+
+        kicad_exts = (".kicad_pcb", ".kicad_sch")
+        if ahead:
+            # Diverged: both sides have commits. A text merge of a board or
+            # schematic both sides edited can produce a file KiCad rejects.
+            local = self._git_paths(["diff", "--name-only", "-z", f"{upstream}...HEAD"])
+            both = sorted(p for p in local & incoming if p.endswith(kicad_exts))
+            if both:
+                self.update_git_status()
+                self._offer_force_sync(
+                    f"Both you ({ahead} local commit(s)) and the server ({behind} new commit(s)) "
+                    "changed:\n\n- " + "\n- ".join(both) + "\n\nKiCad schematics and boards "
+                    "can't be merged automatically.", upstream)
+                return
+            # Dry-run the merge first (git 2.38+; exit 1 = conflicts) so a
+            # conflicting pull never touches the working tree at all.
+            trial = self._git(["merge-tree", "--write-tree", "--name-only", "HEAD", upstream])
+            if trial.returncode == 1:
+                # Output: tree id, conflicted paths, blank line, messages.
+                conflicted = []
+                for line in trial.stdout.splitlines()[1:]:
+                    if not line:
+                        break
+                    conflicted.append(line)
+                self.update_git_status()
+                self._offer_force_sync(
+                    "Your local commits and the server's changes conflict"
+                    + (":\n\n- " + "\n- ".join(sorted(set(conflicted))) if conflicted else ".")
+                    + "\n\nThey can't be merged automatically.", upstream)
+                return
+            res = self._git(["merge", "--no-edit", upstream])
+        else:
+            res = self._git(["merge", "--ff-only", upstream])
+
+        if res.returncode != 0:
+            # Leave the repo as it was, never half-merged.
+            if self._git(["rev-parse", "-q", "--verify", "MERGE_HEAD"]).returncode == 0:
+                self._git(["merge", "--abort"])
+            self.update_git_status()
+            self._offer_force_sync("The pull could not be completed, nothing was changed:\n\n"
+                                   + ((res.stderr or res.stdout).strip() or "unknown error"), upstream)
+            return
+
+        pcbnew.Refresh()
+        self.update_git_status()
+        changed_kicad = sorted(p for p in incoming if p.endswith(kicad_exts))
+        msg = (f"Pulled {behind} commit(s) from {upstream}"
+               + (f" and merged them with your {ahead} local commit(s)." if ahead else "."))
+        if changed_kicad:
+            msg += ("\n\nUpdated KiCad files:\n- " + "\n- ".join(changed_kicad)
+                    + "\n\nClose and reopen them to see the changes. If KiCad asks to save, "
+                    "choose 'Discard Changes'.")
+        wx.MessageBox(msg, "Pull Complete")
 
     def _create_backup_snapshot(self):
         """Saves the FULL current working state — committed history plus any
@@ -931,12 +1128,17 @@ class CommandCenterDialog(wx.Dialog):
                           or "Could not create the backup branch.")
 
         if dirty:
-            run(["add", "-A"])
-            committed = run(["commit", "-m", f"Backup before force sync ({stamp})"])
+            added = run(["add", "-A"])
+            committed = (run(["commit", "-m", f"Backup before force sync ({stamp})"])
+                         if added.returncode == 0 else added)
             if committed.returncode != 0:
                 # Roll back the half-made backup and abort, so we never sync
-                # believing the work was saved when it wasn't.
-                run(["checkout", "-f", original])
+                # believing the work was saved when it wasn't. The backup branch
+                # points at the same commit as `original`, so unstaging and a
+                # plain checkout keep the working tree intact (never -f here:
+                # that would discard the very changes we failed to back up).
+                run(["reset", "-q"])
+                run(["checkout", original])
                 run(["branch", "-D", backup_name])
                 return None, ("Could not commit your changes to the backup branch:\n"
                               + (committed.stderr.strip() or committed.stdout.strip()
@@ -945,15 +1147,25 @@ class CommandCenterDialog(wx.Dialog):
 
         back = run(["checkout", original])
         if back.returncode != 0:
-            return None, (f"Work was saved to '{backup_name}', but returning to "
-                          f"'{original}' failed:\n{back.stderr.strip()}")
+            # Return the name too: the repo is still on the backup branch, so the
+            # caller must not sync (reset --hard would move the backup branch).
+            return backup_name, (f"Work was saved to '{backup_name}', but returning to "
+                                 f"'{original}' failed:\n{back.stderr.strip()}")
 
         return backup_name, None
 
     def perform_atomic_overwrite(self, remote_ref):
         wx.BeginBusyCursor()
         try:
-            subprocess.run([self.git_cmd, "-C", self.project_dir, "fetch", "origin"], creationflags=CREATE_NO_WINDOW)
+            # Only overwrite local files once we know remote_ref is fresh; a failed
+            # fetch would otherwise reset to a stale remote state.
+            res_fetch = subprocess.run([self.git_cmd, "-C", self.project_dir, "fetch", "origin"],
+                                       capture_output=True, text=True, creationflags=CREATE_NO_WINDOW,
+                                       **git_network_kwargs())
+            if res_fetch.returncode != 0:
+                wx.MessageBox("Could not fetch from the remote, nothing was changed:\n\n"
+                              + (res_fetch.stderr.strip() or "unknown error"), "Sync Failed", wx.ICON_ERROR)
+                return
             subprocess.run([self.git_cmd, "-C", self.project_dir, "reset", "--hard", remote_ref], 
                                  capture_output=True, text=True, check=True, creationflags=CREATE_NO_WINDOW)
             subprocess.run([self.git_cmd, "-C", self.project_dir, "clean", "-fd"], creationflags=CREATE_NO_WINDOW)
@@ -997,13 +1209,18 @@ class CommandCenterDialog(wx.Dialog):
             if progress:
                 progress(msg)
 
-        pcb_files = glob.glob(os.path.join(self.project_dir, "*.kicad_pcb"))
+        pcb_files = project_files(self.project_dir, ".kicad_pcb")
         pcb_file = pcb_files[0] if pcb_files else None
 
         export_step = self.settings.get('export_step', False)
         render_image = self.settings.get('render_image', False)
         gerbers_on = self.settings.get('generate_gerbers_zip', False)
         auto_readme = self.settings.get('auto_readme', False)
+
+        # Ask what goes in the BOM up front, before any long-running work, so
+        # the user isn't interrupted halfway through generation.
+        bom_gen, bom_opts = self._ask_bom_options()
+        bom_report = []
 
         # Only pay for the PCB change-check when a PCB-derived artifact needs it.
         need_pcb_flag = pcb_file is not None and (export_step or render_image or gerbers_on)
@@ -1027,7 +1244,7 @@ class CommandCenterDialog(wx.Dialog):
                 print("GitHub Command Center: PCB unchanged and outputs present - skipping STEP/render generation.")
 
         if self.settings.get('export_schematic', False):
-            sch_files = glob.glob(os.path.join(self.project_dir, "*.kicad_sch"))
+            sch_files = project_files(self.project_dir, ".kicad_sch")
             if sch_files:
                 sch_exporter = SchematicExporter(self.project_dir, self.settings, self.kicad_version)
                 sch_updated = any(self.engine.file_content_changed(s, target="HEAD") for s in sch_files)
@@ -1059,8 +1276,9 @@ class CommandCenterDialog(wx.Dialog):
         # the pool's subprocesses execute to overlap the two.
         def do_bom_and_gerbers():
             try:
-                step("Generating BOMs...")
-                BOMGenerator(self.project_dir, self.settings).generate_boms()
+                if bom_gen:
+                    step("Generating BOMs...")
+                    bom_report.append(bom_gen.generate_boms(bom_opts))
 
                 # Gerbers derive from the board, so skip them when the PCB only
                 # has reorder noise — unless forced or the zip doesn't exist yet.
@@ -1126,6 +1344,45 @@ class CommandCenterDialog(wx.Dialog):
         if errors:
             wx.MessageBox("Some file generation steps failed:\n\n- " + "\n- ".join(errors),
                           "Generation Warnings", wx.ICON_WARNING)
+
+        if bom_report:
+            with _no_busy_cursor():
+                dlg = BOMReportDialog(self, bom_report[0], self.project_dir)
+                dlg.ShowModal()
+                dlg.Destroy()
+
+    def _ask_bom_options(self):
+        """Shows the BOM options dialog when a BOM is enabled in the settings.
+        Returns (generator, options), or (None, None) to skip the BOM."""
+        gen = BOMGenerator(self.project_dir, self.settings)
+        if not gen.enabled():
+            return None, None
+        try:
+            # Netlist + BOM export, so the dialog can show real counts and fields.
+            gen.summary()
+        except Exception as e:
+            wx.MessageBox(f"Could not read the schematic for the BOM, so no BOM was generated:\n\n{e}",
+                          "BOM", wx.ICON_WARNING)
+            return None, None
+
+        with _no_busy_cursor():
+            dlg = BOMOptionsDialog(self, gen, self.settings, gen.load_options())
+            ok = dlg.ShowModal() == wx.ID_OK
+            new_settings, options = dlg.get_results()
+            dlg.Destroy()
+        if not ok or not (new_settings['generate_bom_eng'] or new_settings['generate_bom_dist']):
+            return None, None   # skipped this time; the Settings stay as they were
+
+        # Remember the choices: outputs and part-number field globally (they
+        # mirror the Settings dialog), the rest per project.
+        self.settings.update(new_settings)
+        save_settings(self.settings)
+        proj = load_project_settings(self.project_dir)
+        proj['bom_options'] = options
+        save_project_settings(self.project_dir, proj)
+
+        gen.mpn_field = new_settings['mpn_field_name']
+        return gen, options
 
     def on_generate_files(self, event):
         """Manual-mode trigger for the 'Generate Project Files' button. Runs the
@@ -1219,7 +1476,14 @@ class CommandCenterDialog(wx.Dialog):
                     res_branch = subprocess.run([self.git_cmd, "-C", self.project_dir, "checkout", "-b", branch], 
                                                 capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
                     if res_branch.returncode != 0:
-                        subprocess.run([self.git_cmd, "-C", self.project_dir, "checkout", branch], creationflags=CREATE_NO_WINDOW)
+                        res_switch = subprocess.run([self.git_cmd, "-C", self.project_dir, "checkout", branch],
+                                                    capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
+                        if res_switch.returncode != 0:
+                            wx.MessageBox(f"Could not switch to branch '{branch}', nothing was committed:\n"
+                                          f"{res_switch.stderr.strip() or res_branch.stderr.strip()}",
+                                          "Git Error", wx.ICON_ERROR)
+                            dlg.Destroy()
+                            return
 
                 subprocess.run([self.git_cmd, "-C", self.project_dir, "reset"], creationflags=CREATE_NO_WINDOW)
                 
@@ -1257,7 +1521,7 @@ class CommandCenterDialog(wx.Dialog):
         wx.BeginBusyCursor()
         
         # Fire and forget the background thread
-        thread = threading.Thread(target=self._push_worker)
+        thread = threading.Thread(target=self._push_worker, daemon=True)
         thread.start()
 
     def _push_worker(self):
@@ -1271,7 +1535,8 @@ class CommandCenterDialog(wx.Dialog):
             branch = res_br.stdout.strip()
             
             if self.settings.get('silent_pull', False):
-                subprocess.run([self.git_cmd, "-C", self.project_dir, "fetch", "origin", branch], creationflags=CREATE_NO_WINDOW)
+                subprocess.run([self.git_cmd, "-C", self.project_dir, "fetch", "origin", branch],
+                               capture_output=True, creationflags=CREATE_NO_WINDOW, **git_network_kwargs())
                 res_diff = subprocess.run([self.git_cmd, "-C", self.project_dir, "diff", f"HEAD..origin/{branch}", "--name-only"],
                                           capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
                 changed_files = [f.strip() for f in res_diff.stdout.split('\n') if f.strip()]
@@ -1280,13 +1545,25 @@ class CommandCenterDialog(wx.Dialog):
                     dangerous_exts = ('.kicad_pcb', '.kicad_sch', '.kicad_pro', '.kicad_prl')
                     has_dangerous = any(f.endswith(dangerous_exts) for f in changed_files)
                     if not has_dangerous:
-                        subprocess.run([self.git_cmd, "-C", self.project_dir, "pull", "--rebase", "-X", "ours", "origin", branch], 
-                                       creationflags=CREATE_NO_WINDOW)
+                        # No "-X ours": during a rebase "ours" is the *remote*
+                        # side, which would silently drop conflicting local
+                        # edits. On any conflict, abort and let the push report it.
+                        res_pull = subprocess.run([self.git_cmd, "-C", self.project_dir, "pull", "--rebase", "origin", branch],
+                                                  capture_output=True, text=True, creationflags=CREATE_NO_WINDOW,
+                                                  **git_network_kwargs())
+                        if res_pull.returncode != 0:
+                            subprocess.run([self.git_cmd, "-C", self.project_dir, "rebase", "--abort"],
+                                           capture_output=True, creationflags=CREATE_NO_WINDOW)
+                            wx.CallAfter(self._push_complete, False,
+                                         "Auto-pull of remote changes failed, so nothing was pushed:\n"
+                                         + (res_pull.stderr.strip() or res_pull.stdout.strip()))
+                            return
                     else:
                         print("Silent pull aborted: Remote KiCad changes detected.")
 
             res = subprocess.run([self.git_cmd, "-C", self.project_dir, "push", "-u", "origin", branch],
-                                 capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
+                                 capture_output=True, text=True, creationflags=CREATE_NO_WINDOW,
+                                 **git_network_kwargs())
 
             if res.returncode == 0:
                 success = True
@@ -1296,7 +1573,8 @@ class CommandCenterDialog(wx.Dialog):
                 # created via "Create Version Tag" never reached the remote.
                 # Publish them too (no-op when there are none).
                 res_tags = subprocess.run([self.git_cmd, "-C", self.project_dir, "push", "origin", "--tags"],
-                                          capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
+                                          capture_output=True, text=True, creationflags=CREATE_NO_WINDOW,
+                                          **git_network_kwargs())
                 if res_tags.returncode == 0:
                     if "new tag" in (res_tags.stderr or ""):
                         message += "\nVersion tags pushed."
@@ -1306,6 +1584,9 @@ class CommandCenterDialog(wx.Dialog):
                 success = False
                 message = f"Push Failed:\n{res.stderr.strip()}"
                 
+        except subprocess.TimeoutExpired:
+            success = False
+            message = "Push timed out. Check your network connection and git credentials."
         except Exception as e:
             success = False
             message = f"An unexpected error occurred: {e}"
@@ -1317,7 +1598,14 @@ class CommandCenterDialog(wx.Dialog):
         """3. The Callback: Runs on the main thread, updates the UI based on results."""
         if wx.IsBusy(): 
             wx.EndBusyCursor()
-            
+
+        # The dialog may have been closed while the push ran; still tell the
+        # user the outcome, but don't touch its (destroyed) widgets.
+        if not self._alive:
+            wx.MessageBox(message, "Success" if success else "Error",
+                          wx.OK if success else wx.OK | wx.ICON_ERROR)
+            return
+
         self.btn_push.Enable()
         
         if success:
@@ -1356,5 +1644,12 @@ class CommandCenterDialog(wx.Dialog):
             wx.MessageBox(f"Failed to open remote URL: {e}", "Error")
 
     def on_close(self, event):
+        # Must end the modal loop rather than Destroy(): destroying a dialog
+        # while ShowModal() is running hides it on macOS but never returns,
+        # leaving KiCad blocked behind an invisible modal window. The caller
+        # destroys the dialog once ShowModal() returns.
         self._alive = False
-        self.Destroy()
+        if self.IsModal():
+            self.EndModal(wx.ID_CLOSE)
+        else:
+            self.Destroy()

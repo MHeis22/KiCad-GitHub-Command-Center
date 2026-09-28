@@ -10,7 +10,8 @@ import time
 import hashlib
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from .utils import CREATE_NO_WINDOW, find_kicad_cli
+from .utils import CREATE_NO_WINDOW, find_kicad_cli, TMP_OLD_PREFIX, load_settings
+from .bom_generator import BOMGenerator
 from .kicad_parser import (
     get_pcb_layers, get_pcb_dimensions, get_pcb_structure,
     get_sch_structure, get_bom_data, compare_logic_data, extract_todos
@@ -164,8 +165,12 @@ class DiffEngine:
         status_dict = {}
         try:
             # 1. Compare working tree to the specific target commit/branch (will fail if HEAD missing on new repo)
-            res = subprocess.run([self.git_cmd, "-C", self.project_dir, "diff", target, "--name-status"],
-                                 capture_output=True, text=True, timeout=30, creationflags=CREATE_NO_WINDOW)
+            # core.quotePath=false: otherwise non-ASCII names (ä, ö, ...) come
+            # back as quoted octal escapes that match no real file.
+            res = subprocess.run([self.git_cmd, "-c", "core.quotePath=false", "-C", self.project_dir,
+                                  "diff", target, "--name-status"],
+                                 capture_output=True, text=True, encoding="utf-8", errors="replace",
+                                 timeout=30, creationflags=CREATE_NO_WINDOW)
             for line in res.stdout.split('\n'):
                 if line.strip():
                     parts = line.split('\t')
@@ -188,8 +193,10 @@ class DiffEngine:
                             status_dict[fname] = code
 
             # 2. Catch untracked files and staged files that might be missed if HEAD doesn't exist
-            res_untracked = subprocess.run([self.git_cmd, "-C", self.project_dir, "status", "--porcelain"],
-                                 capture_output=True, text=True, timeout=30, creationflags=CREATE_NO_WINDOW)
+            res_untracked = subprocess.run([self.git_cmd, "-c", "core.quotePath=false", "-C", self.project_dir,
+                                            "status", "--porcelain"],
+                                 capture_output=True, text=True, encoding="utf-8", errors="replace",
+                                 timeout=30, creationflags=CREATE_NO_WINDOW)
             for line in res_untracked.stdout.split('\n'):
                 if len(line) > 2:
                     code = line[:2].strip()
@@ -352,7 +359,10 @@ class DiffEngine:
                 if os.path.exists(file_path):
                     fhash = self._file_hash(file_path)
                     if fhash:
-                        cache_key = (fhash, task['layer'], task['is_pcb'])
+                        # out_path is part of the key: outputs are rewritten
+                        # per run, so a hit for another path may now hold a
+                        # different revision's render.
+                        cache_key = (fhash, task['layer'], task['is_pcb'], out_path)
                         cached = self._svg_cache.get(cache_key)
                         if cached and os.path.exists(cached):
                             task['result'] = cached
@@ -391,6 +401,30 @@ class DiffEngine:
         
         return task
 
+    def _design_boms(self, target):
+        """(current, at-target) whole-design BOM dicts from kicad-cli, or None
+        for a side that couldn't be exported (callers fall back per file)."""
+        settings = load_settings()
+        curr = old = None
+        try:
+            curr = BOMGenerator(self.project_dir, settings).bom_dict()
+        except Exception as e:
+            print(f"GitHub Command Center: current BOM export failed, using fallback: {e}")
+        gen = None
+        try:
+            gen = BOMGenerator.at_revision(self.project_dir, target, settings, git_cmd=self.git_cmd)
+            old = gen.bom_dict() if gen else {}
+        except Exception as e:
+            print(f"GitHub Command Center: BOM export at {target} failed, using fallback: {e}")
+        finally:
+            if gen:
+                gen.cleanup()
+        if curr is None or old is None:
+            # Both sides must come from the same source, or the diff would show
+            # differences between the two parsers rather than the two designs.
+            return None, None
+        return curr, old
+
     def render_all_diffs(self, show_unchanged=False, compare_target="HEAD", run_drc=False, progress_callback=None):
         """
         Scans for .kicad_pcb and .kicad_sch. Exports visual, logical files, and optionally DRC.
@@ -410,10 +444,9 @@ class DiffEngine:
         git_status = self.get_git_status(target=actual_target)
 
         all_potential = set()
-        for fname in os.listdir(self.project_dir):
-            if fname.endswith('.kicad_pcb') or fname.endswith('.kicad_sch'):
-                all_potential.add(fname)
-        for fname in git_status.keys():
+        for fname in list(os.listdir(self.project_dir)) + list(git_status.keys()):
+            if os.path.basename(fname).startswith(TMP_OLD_PREFIX):
+                continue  # stale reference copy from an interrupted diff
             if fname.endswith('.kicad_pcb') or fname.endswith('.kicad_sch'):
                 all_potential.add(fname)
 
@@ -558,6 +591,13 @@ class DiffEngine:
                         else:
                             ctx['old_health'] = res['result'] or []
 
+        # BOM tab: KiCad's own BOM export for the whole design, now and at the
+        # compare target, split per sheet afterwards. Per-file regex parsing
+        # can't see hierarchy (a sheet used twice has two sets of references).
+        bom_curr_all = bom_old_all = None
+        if any(f.endswith('.kicad_sch') for f in target_files):
+            bom_curr_all, bom_old_all = self._design_boms(actual_target)
+
         # ---- Phase C: logical extraction + assembly (sequential; pcbnew) ----
         diffs = []
         for ctx in contexts:
@@ -590,11 +630,17 @@ class DiffEngine:
                         pcb_logic_diff = compare_logic_data(old_comp, curr_comp)
 
                 if not is_pcb:
+                    def sheet_bom(design_bom, path):
+                        if design_bom is None:   # kicad-cli unavailable: old parser
+                            return get_bom_data(path)
+                        return {r: d for r, d in design_bom.items()
+                                if BOMGenerator.on_sheet(d.get('sheetfiles'), fname)}
+
                     if status_text != "Deleted":
-                        bom_data["curr"] = get_bom_data(file_path)
+                        bom_data["curr"] = sheet_bom(bom_curr_all, file_path)
 
                     if has_old:
-                        bom_data["old"] = get_bom_data(old_board_tmp)
+                        bom_data["old"] = sheet_bom(bom_old_all, old_board_tmp)
                         if ctx['curr_net'] and ctx['old_net']:
                             netlist_diff = self._generate_text_diff(ctx['old_net'], ctx['curr_net'])
 
@@ -636,6 +682,15 @@ class DiffEngine:
                 if ctx['old_pro_tmp'] and os.path.exists(ctx['old_pro_tmp']):
                     try: os.remove(ctx['old_pro_tmp'])
                     except OSError: pass
+                # kicad-cli also creates a local-settings file and a backups
+                # folder next to the reference copy; don't leave them in the project.
+                if ctx['old_pro_tmp']:
+                    stem = os.path.splitext(ctx['old_pro_tmp'])[0]
+                    if os.path.isfile(stem + ".kicad_prl"):
+                        try: os.remove(stem + ".kicad_prl")
+                        except OSError: pass
+                    if os.path.isdir(stem + "-backups"):
+                        shutil.rmtree(stem + "-backups", ignore_errors=True)
 
         summary = "\n".join(summary_lines) if summary_lines else "No files found."
         return diffs, summary

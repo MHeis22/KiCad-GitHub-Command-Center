@@ -6,8 +6,10 @@ import sys
 import subprocess
 import json
 import tempfile
-from .utils import CREATE_NO_WINDOW, find_kicad_cli
+from .utils import CREATE_NO_WINDOW, find_kicad_cli, project_files
+from .dimension_annotator import _blocks
 from .kicad_parser import get_pcb_dimensions, get_pcb_layers, get_bom_data, extract_todos, get_pcb_structure
+from .bom_generator import BOMGenerator
 
 class ReadmeGenerator:
     def __init__(self, project_dir, settings=None):
@@ -164,9 +166,9 @@ class ReadmeGenerator:
         main_sch = sch_files[0]
         with open(main_sch, 'r', encoding='utf-8', errors='ignore') as f:
             content = f.read()
-            tb = re.search(r'\(title_block(.*?)\)', content, re.DOTALL)
+            tb = _blocks(content, "title_block")
             if tb:
-                tb_str = tb.group(1)
+                tb_str = tb[0]
                 for key in ['title', 'company', 'rev', 'date']:
                     m = re.search(rf'\({key}\s+"([^"]+)"\)', tb_str)
                     if m and m.group(1).strip() and m.group(1).strip() != '""':
@@ -178,7 +180,7 @@ class ReadmeGenerator:
                 content = f.read()
                 
                 # Sheets
-                sheets = re.findall(r'\(property\s+"Sheetname"\s+"([^"]+)"\)', content)
+                sheets = re.findall(r'\(property\s+"Sheetname"\s+"([^"]+)"', content)
                 for s in sheets:
                     if s != "Root":
                         data['sheets'].add(s)
@@ -207,8 +209,8 @@ class ReadmeGenerator:
 
     def update_readme(self, kicad_version="Unknown KiCad Version", board_images=None,
                       schematic_images=None, drc_status=None):
-        pcb_files = glob.glob(os.path.join(self.project_dir, "*.kicad_pcb"))
-        sch_files = glob.glob(os.path.join(self.project_dir, "*.kicad_sch"))
+        pcb_files = project_files(self.project_dir, ".kicad_pcb")
+        sch_files = project_files(self.project_dir, ".kicad_sch")
 
         pcb_file = pcb_files[0] if pcb_files else None
 
@@ -288,10 +290,20 @@ class ReadmeGenerator:
         bom = {}
         mpn_field_setting = self.settings.get('mpn_field_name', 'MPN')
         if sch_files:
+            # Components come from KiCad's netlist export, which resolves the
+            # hierarchy (a sheet placed twice contributes both sets of parts).
+            # Excluded-from-BOM parts are kept, since mounting holes are listed
+            # below; test points and unannotated symbols are left out as before.
+            try:
+                design = BOMGenerator(self.project_dir, self.settings).component_dict(include_excluded=True)
+                bom = {r: d for r, d in design.items()
+                       if not r.startswith(('TP', '#')) and any(ch.isdigit() for ch in r)}
+            except Exception as e:
+                print(f"README: kicad-cli component export failed, using fallback: {e}")
+                for sch in sch_files:
+                    bom.update(get_bom_data(sch, include_excluded_from_bom=True, mpn_field=mpn_field_setting))
+
             for sch in sch_files:
-                # Pass mpn_field into get_bom_data so it renders the correct part numbers in README
-                sch_bom = get_bom_data(sch, include_excluded_from_bom=True, mpn_field=mpn_field_setting)
-                bom.update(sch_bom)
                 all_todos.update(extract_todos(sch))
                 
                 try:
@@ -502,16 +514,30 @@ class ReadmeGenerator:
         content = ""
         
         if os.path.exists(readme_path):
-            with open(readme_path, "r", encoding="utf-8", errors="ignore") as f:
+            # surrogateescape round-trips any non-UTF-8 bytes unchanged
+            with open(readme_path, "r", encoding="utf-8", errors="surrogateescape") as f:
                 content = f.read()
 
-        content = re.sub(r'<!-- KICAD_DIFF_GEN_START -->.*?<!-- KICAD_DIFF_GEN_END -->', '', content, flags=re.DOTALL)
-        content = content.rstrip()
+        start_tag, end_tag = "<!-- KICAD_DIFF_GEN_START -->", "<!-- KICAD_DIFF_GEN_END -->"
+        end_pos = content.find(end_tag)
+        start_pos = content.rfind(start_tag, 0, end_pos) if end_pos >= 0 else -1
+        if content.count(end_tag) == 1 and start_pos >= 0:
+            # Replace the generated block in place, keeping user text around it.
+            # Anchor on the START nearest the END, so an orphaned START left by a
+            # hand edit never swallows the user text that follows it.
+            content = content[:start_pos] + new_block + content[end_pos + len(end_tag):]
+            if not content.endswith("\n"):
+                content += "\n"
+        else:
+            # No block yet, or the markers were edited by hand: never delete
+            # anything we can't unambiguously identify, just append.
+            content = content.rstrip()
+            if content: content += "\n\n"
+            content += new_block + "\n"
 
-        if content: content += "\n\n"
-        content += new_block + "\n"
-
-        with open(readme_path, "w", encoding="utf-8") as f:
+        tmp_path = readme_path + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8", errors="surrogateescape") as f:
             f.write(content)
+        os.replace(tmp_path, readme_path)
 
         return readme_path

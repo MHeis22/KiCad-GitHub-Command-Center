@@ -18,6 +18,8 @@ import re
 import glob
 import math
 
+from .utils import project_files
+
 IMAGE_SUBDIR = "docs"
 
 
@@ -178,7 +180,7 @@ def _is_regular(holes, cx, cy, tol=0.25):
 class DimensionAnnotator:
     def __init__(self, project_dir):
         self.project_dir = project_dir
-        pcbs = glob.glob(os.path.join(project_dir, "*.kicad_pcb"))
+        pcbs = project_files(project_dir, ".kicad_pcb")
         self.pcb = pcbs[0] if pcbs else None
 
     def available(self):
@@ -190,12 +192,16 @@ class DimensionAnnotator:
 
         Imports numpy/Pillow lazily so a missing lib degrades to 'no overlay'
         rather than breaking the render."""
-        import numpy as np
-        from PIL import Image, ImageDraw, ImageFont
+        try:
+            import numpy as np
+            from PIL import Image, ImageDraw, ImageFont
+        except ImportError:
+            return None
 
         if not self.pcb or not os.path.exists(render_path):
             return None
-        text = open(self.pcb, encoding="utf-8", errors="ignore").read()
+        with open(self.pcb, encoding="utf-8", errors="ignore") as fh:
+            text = fh.read()
         outline = parse_outline(text)
         if not outline:
             return None
@@ -237,11 +243,24 @@ class DimensionAnnotator:
 
         INK = (36, 46, 64, 255)
         ACC = (200, 70, 40, 255)        # subtle accent for a traced outline
-        try:
-            f = ImageFont.truetype("arialbd.ttf", text_px)
-            fs = ImageFont.truetype("arial.ttf", int(text_px * 0.85))
-        except Exception:
-            f = fs = ImageFont.load_default()
+        f = fs = None
+        # Windows names, then macOS paths; Pillow won't find the latter by name.
+        for bold, reg in (("arialbd.ttf", "arial.ttf"),
+                          ("/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+                           "/System/Library/Fonts/Supplemental/Arial.ttf"),
+                          ("DejaVuSans-Bold.ttf", "DejaVuSans.ttf")):
+            try:
+                f = ImageFont.truetype(bold, text_px)
+                fs = ImageFont.truetype(reg, int(text_px * 0.85))
+                break
+            except Exception:
+                continue
+        if f is None:
+            try:  # Pillow >= 10.1 can scale the default font
+                f = ImageFont.load_default(size=text_px)
+                fs = ImageFont.load_default(size=int(text_px * 0.85))
+            except TypeError:
+                f = fs = ImageFont.load_default()
         LW = max(2, text_px // 22)
         AR = int(text_px * 0.42)
 

@@ -107,7 +107,11 @@ def get_pcb_dimensions(file_path):
                 poly_set = None
                 try:
                     ps = pcbnew.SHAPE_POLY_SET()
-                    res = board.GetBoardPolygonOutlines(ps)
+                    try:
+                        # KiCad 10 requires aInferOutlineIfNecessary
+                        res = board.GetBoardPolygonOutlines(ps, True)
+                    except TypeError:
+                        res = board.GetBoardPolygonOutlines(ps)
                     
                     if hasattr(res, 'OutlineCount') and not isinstance(res, bool):
                         poly_set = res

@@ -2,9 +2,33 @@ import os
 import json
 import subprocess
 import shutil
+import glob
 
 # Fix for Windows: prevents the plugin from popping up CMD windows or hanging
 CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
+
+# Network git commands (fetch/pull/push) must never wait for interactive input:
+# a credential or host-key prompt nobody can answer would block forever and,
+# on the UI thread, freeze KiCad. Fail fast instead and report the error.
+GIT_NETWORK_TIMEOUT = 120
+
+def git_network_kwargs():
+    """subprocess.run kwargs for git commands that talk to a remote."""
+    env = dict(os.environ)
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    env["GCM_INTERACTIVE"] = "never"
+    env.setdefault("GIT_SSH_COMMAND", "ssh -o BatchMode=yes")
+    return {"env": env, "stdin": subprocess.DEVNULL, "timeout": GIT_NETWORK_TIMEOUT}
+
+# Prefix of the git-reference copies DiffEngine writes next to the real files.
+TMP_OLD_PREFIX = "tmp_git_old_"
+
+def project_files(project_dir, ext):
+    """Sorted '*<ext>' files in project_dir, ignoring DiffEngine's temporary
+    reference copies (which can be left behind if KiCad quits mid-diff and
+    would otherwise be picked as 'the' board/schematic)."""
+    return sorted(p for p in glob.glob(os.path.join(project_dir, "*" + ext))
+                  if not os.path.basename(p).startswith(TMP_OLD_PREFIX))
 
 def get_settings_path():
     """Returns the path for the global plugin settings file."""
