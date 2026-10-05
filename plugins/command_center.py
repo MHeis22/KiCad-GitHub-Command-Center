@@ -60,7 +60,7 @@ def _make_action_button(parent, label, light=None, dark=None, size=(-1, 40)):
 
 from .utils import (CREATE_NO_WINDOW, git_network_kwargs, project_files, load_settings, save_settings,
                     get_last_target, save_last_target, load_project_settings, save_project_settings)
-from .ui_dialogs import SettingsDialog, CommitDialog, Model3DSettingsDialog
+from .ui_dialogs import SettingsDialog, CommitDialog, Model3DSettingsDialog, BundlePreviewDialog
 from .diff_engine import DiffEngine
 from .diff_window import DiffWindow
 from .readme_generator import ReadmeGenerator
@@ -70,6 +70,7 @@ from .jlcpcb_exporter import JLCPCBExporter
 from .model_exporter import Model3DExporter
 from .schematic_exporter import SchematicExporter
 from .jlcpcb_rules import set_jlcpcb_constraints
+from .project_bundler import ProjectBundler
 
 class _no_busy_cursor:
     """Temporarily clears the (nestable) busy cursor so a modal dialog shown
@@ -223,6 +224,13 @@ class CommandCenterDialog(wx.Dialog):
         btn_3d.SetToolTip("Configure STEP model export and PCB image rendering generated on commit.")
         btn_3d.Bind(wx.EVT_BUTTON, self.on_3d_settings)
         sizer_local.Add(btn_3d, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=5)
+
+        # --- Bundle personal libraries into the project ---
+        btn_bundle = _make_action_button(self.scroll_panel, "Bundle Libraries into Project...", (230, 230, 250), (90, 70, 160))
+        btn_bundle.SetToolTip("Copy the non-stock symbols, footprints and 3D models this project uses into /libs "
+                              "and relink the design, so teammates can open it without your personal libraries.")
+        btn_bundle.Bind(wx.EVT_BUTTON, self.on_bundle_libraries)
+        sizer_local.Add(btn_bundle, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=5)
 
         # --- Manual file generation (hidden unless enabled in Settings) ---
         self.btn_gen = _make_action_button(self.scroll_panel, "Generate Project Files", (255, 235, 200), (150, 110, 30))
@@ -1383,6 +1391,68 @@ class CommandCenterDialog(wx.Dialog):
 
         gen.mpn_field = new_settings['mpn_field_name']
         return gen, options
+
+    def on_bundle_libraries(self, event):
+        """Copies non-stock symbols/footprints/3D models into <project>/libs and
+        relinks the schematics (on disk) and the open board (in memory)."""
+        board = pcbnew.GetBoard()
+        state = {}
+
+        def rescan(include_stock):
+            state['bundler'] = ProjectBundler(self.project_dir, board, include_stock=include_stock)
+            return state['bundler'].scan()
+
+        wx.BeginBusyCursor()
+        try:
+            plan = rescan(False)
+        except Exception as e:
+            if wx.IsBusy(): wx.EndBusyCursor()
+            wx.MessageBox(f"Could not scan the project libraries:\n{e}", "Bundle Libraries", wx.ICON_ERROR)
+            return
+        if wx.IsBusy(): wx.EndBusyCursor()
+
+        dlg = BundlePreviewDialog(self, plan, rescan)
+        ok = dlg.ShowModal() == wx.ID_OK
+        plan = dlg.plan
+        dlg.Destroy()
+        if not ok:
+            return
+
+        bundler = state['bundler']
+        locked = bundler.locked_schematics()
+        while locked:
+            sheets = "\n  ".join(os.path.basename(p) for p in locked)
+            if wx.MessageBox(f"Close the Schematic Editor first (it has these sheets open):\n  {sheets}\n\n"
+                             "Click OK once it is closed.", "Bundle Libraries",
+                             wx.OK | wx.CANCEL | wx.ICON_WARNING) != wx.OK:
+                return
+            locked = bundler.locked_schematics()
+
+        wx.BeginBusyCursor()
+        try:
+            result = bundler.apply(plan, progress=self._set_status)
+        except Exception as e:
+            if wx.IsBusy(): wx.EndBusyCursor()
+            self._set_status("Bundle failed.")
+            backup_dir = os.path.join(bundler.project_dir, ".bundle_backup")
+            wx.MessageBox(f"Bundling failed:\n{e}\n\nOriginal files were backed up to {backup_dir} "
+                          "before any change.", "Bundle Libraries", wx.ICON_ERROR)
+            return
+        if wx.IsBusy(): wx.EndBusyCursor()
+        pcbnew.Refresh()
+        self._set_status("Libraries bundled. Save the board.")
+
+        extra = ("\n\nWarnings:\n" + "\n".join(plan.warnings)) if plan.warnings else ""
+        wx.MessageBox(
+            f"Bundled {result['symbols']} symbols, {result['footprints']} footprints and "
+            f"{result['models']} 3D models into /libs.\n"
+            f"Relinked {result['sheets']} schematic sheet(s) and {result['board_footprints']} board footprint(s).\n\n"
+            "Next steps:\n"
+            "  1. Save the board now (Ctrl+S) - the board changes are not saved yet.\n"
+            "  2. Close and reopen the project so KiCad loads the new project library tables.\n"
+            "  3. Commit the libs/ folder, sym-lib-table and fp-lib-table with the project." + extra,
+            "Bundle Complete", wx.ICON_INFORMATION)
+        self.update_git_status()
 
     def on_generate_files(self, event):
         """Manual-mode trigger for the 'Generate Project Files' button. Runs the

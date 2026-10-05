@@ -31,6 +31,9 @@ A Git front-end for the KiCad PCB editor. It wraps common Git operations in a di
 - 3D STEP model export (to `/3d`) and rendered PCB images (to `/docs`), embedded centered in the README. See below.
 - STEP models, gerbers and renders are skipped on a commit when the PCB file was only re-serialized by KiCad (no real design change), to avoid committing that churn.
 
+**Sharing with a team**
+- **Bundle Libraries into Project**: copies every non-stock symbol, footprint and 3D model the project uses into `/libs` and relinks the schematic and board to a project library (`${KIPRJMOD}`), so teammates can open the project without your personal libraries. See below.
+
 ## Screenshots
 
 Main window:
@@ -83,3 +86,15 @@ Click **3D Model & Render Settings...** in the main window to configure 3D outpu
 
 - **STEP export** (KiCad 7.0+): writes a `.step` model to `/3d`. Options: substitute similar 3D models when exact ones are missing, exclude DNP components, or export the bare board only.
 - **PCB image render** (KiCad 9.0+): writes a rendered image to `/docs` and embeds it, centered, in the README. Supports rendering both top and bottom, quality (basic or ray-traced), background, view side, and image dimensions. The render controls are disabled if the installed KiCad predates 9.0.
+
+## Bundle Libraries into Project
+
+Click **Bundle Libraries into Project...** in the main window (Schematic Editor must be closed). A preview lists everything that will be copied; stock KiCad parts are left linked to KiCad's built-in libraries unless you tick **Include stock KiCad parts too**.
+
+- Symbols are taken from the schematic's embedded copies and written to `libs/<project>.kicad_sym`.
+- Footprints are copied from their source library (or exported from the board if the library is gone) to `libs/<project>.pretty`.
+- Custom 3D models are copied to `libs/3dmodels` and referenced as `${KIPRJMOD}/libs/3dmodels/...`.
+- `sym-lib-table` / `fp-lib-table` in the project folder get a `<project>` entry; schematics, footprint fields and the open board are relinked to it.
+- Originals are backed up to `.bundle_backup/` (git-ignored). Running it again only adds parts that are new.
+
+Afterwards, **save the board** and reopen the project, then commit `libs/` and the two lib-table files.

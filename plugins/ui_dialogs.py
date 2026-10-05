@@ -469,3 +469,97 @@ class CommitDialog(wx.Dialog):
 
     def get_selected_files(self):
         return [f for f, cb in self.file_checks.items() if cb.IsChecked()]
+
+class BundlePreviewDialog(wx.Dialog):
+    """Shows what 'Bundle Libraries into Project' will copy before anything is
+    changed. `rescan(include_stock)` must return a fresh BundlePlan; it is called
+    again when the 'include stock parts' box is toggled."""
+
+    def __init__(self, parent, plan, rescan):
+        super().__init__(parent, title="Bundle Libraries into Project", size=(720, 640),
+                         style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER)
+        self.plan = plan
+        self.rescan = rescan
+
+        vbox = wx.BoxSizer(wx.VERTICAL)
+        intro = wx.StaticText(self, label=(
+            "Copies the symbols, footprints and 3D models this project uses from your personal\n"
+            f"libraries into /libs and relinks the design to the '{plan.nickname}' project library,\n"
+            "so teammates can open the project without your libraries."
+        ))
+        intro.SetForegroundColour(wx.Colour(100, 100, 100))
+        vbox.Add(intro, flag=wx.ALL, border=15)
+
+        self.list = wx.ListCtrl(self, style=wx.LC_REPORT | wx.BORDER_SUNKEN)
+        self.list.InsertColumn(0, "Type", width=90)
+        self.list.InsertColumn(1, "Item", width=300)
+        self.list.InsertColumn(2, "Becomes / Source", width=290)
+        vbox.Add(self.list, proportion=1, flag=wx.EXPAND | wx.LEFT | wx.RIGHT, border=15)
+
+        self.summary = wx.StaticText(self, label="")
+        vbox.Add(self.summary, flag=wx.ALL, border=15)
+
+        self.warn = wx.TextCtrl(self, style=wx.TE_MULTILINE | wx.TE_READONLY, size=(-1, 90))
+        vbox.Add(self.warn, flag=wx.EXPAND | wx.LEFT | wx.RIGHT, border=15)
+
+        self.cb_stock = wx.CheckBox(self, label="Include stock KiCad parts too")
+        self.cb_stock.SetToolTip("Stock libraries ship with KiCad, so teammates already have them. "
+                                 "Enable only if you want the project fully self-contained.")
+        self.cb_stock.Bind(wx.EVT_CHECKBOX, self.on_stock_toggle)
+        vbox.Add(self.cb_stock, flag=wx.ALL, border=15)
+
+        note = wx.StaticText(self, label=(
+            "The Schematic Editor must be closed. Afterwards, save the board (Ctrl+S) and\n"
+            "reopen the project so KiCad picks up the new project library tables."
+        ))
+        note.SetForegroundColour(wx.Colour(170, 90, 0))
+        vbox.Add(note, flag=wx.LEFT | wx.RIGHT | wx.BOTTOM, border=15)
+
+        btn_sizer = wx.StdDialogButtonSizer()
+        self.btn_ok = wx.Button(self, wx.ID_OK, label="Bundle")
+        btn_sizer.AddButton(self.btn_ok)
+        btn_sizer.AddButton(wx.Button(self, wx.ID_CANCEL))
+        btn_sizer.Realize()
+        vbox.Add(btn_sizer, flag=wx.ALIGN_RIGHT | wx.BOTTOM | wx.RIGHT, border=10)
+
+        self.SetSizer(vbox)
+        self.CenterOnParent()
+        self._populate()
+
+    def _populate(self):
+        p = self.plan
+        self.list.DeleteAllItems()
+        rows = []
+        for (lib, name), i in sorted(p.symbols.items()):
+            rows.append(("Symbol", f"{lib}:{name}", f"{p.nickname}:{i['new_name']}"))
+        for (lib, name), i in sorted(p.footprints.items()):
+            rows.append(("Footprint", f"{lib}:{name}", f"{p.nickname}:{i['new_name']}  ({i['origin']})"))
+        for raw, i in sorted(p.models.items()):
+            rows.append(("3D model", os.path.basename(i['src']), f"libs/3dmodels/{i['dest_name']}"))
+        for r in rows:
+            idx = self.list.InsertItem(self.list.GetItemCount(), r[0])
+            self.list.SetItem(idx, 1, r[1])
+            self.list.SetItem(idx, 2, r[2])
+
+        stock = p.skipped_stock
+        text = (f"{len(p.symbols)} symbols, {len(p.footprints)} footprints, {len(p.models)} 3D models to bundle.")
+        if stock['symbols'] or stock['footprints']:
+            text += f"  Stock parts left linked to KiCad libraries: {stock['symbols']} symbols, {stock['footprints']} footprints."
+        if p.is_empty():
+            text = "Nothing to bundle: every part already comes from a stock or project library."
+        self.summary.SetLabel(text)
+        self.summary.Wrap(680)
+        self.warn.SetValue("\n".join(p.warnings) if p.warnings else "No warnings.")
+        self.btn_ok.Enable(not p.is_empty())
+        self.Layout()
+
+    def on_stock_toggle(self, event):
+        wx.BeginBusyCursor()
+        try:
+            self.plan = self.rescan(self.cb_stock.GetValue())
+        finally:
+            wx.EndBusyCursor()
+        self._populate()
+
+    def include_stock(self):
+        return self.cb_stock.GetValue()
