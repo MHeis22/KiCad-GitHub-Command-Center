@@ -1440,17 +1440,17 @@ class CommandCenterDialog(wx.Dialog):
             return
         if wx.IsBusy(): wx.EndBusyCursor()
         pcbnew.Refresh()
-        self._set_status("Libraries bundled. Save the board.")
+        self._set_status("Libraries bundled.")
 
         extra = ("\n\nWarnings:\n" + "\n".join(plan.warnings)) if plan.warnings else ""
         wx.MessageBox(
             f"Bundled {result['symbols']} symbols, {result['footprints']} footprints and "
             f"{result['models']} 3D models into /libs.\n"
-            f"Relinked {result['sheets']} schematic sheet(s) and {result['board_footprints']} board footprint(s).\n\n"
+            f"Relinked {result['sheets']} schematic sheet(s) and {result['board_footprints']} board footprint(s); "
+            "the board has been saved.\n\n"
             "Next steps:\n"
-            "  1. Save the board now (Ctrl+S) - the board changes are not saved yet.\n"
-            "  2. Close and reopen the project so KiCad loads the new project library tables.\n"
-            "  3. Commit the libs/ folder, sym-lib-table and fp-lib-table with the project." + extra,
+            "  1. Close and reopen the project so KiCad loads the new project library tables.\n"
+            "  2. Commit the libs/ folder, sym-lib-table and fp-lib-table with the project." + extra,
             "Bundle Complete", wx.ICON_INFORMATION)
         self.update_git_status()
 

@@ -14,7 +14,7 @@ from .utils import CREATE_NO_WINDOW, find_kicad_cli
 # Two passes: scan() builds a BundlePlan without touching anything (shown to the
 # user as a preview), apply() performs it. Schematics are edited as text on disk
 # (eeschema must be closed); the board is edited through the live pcbnew object
-# so the open PCB editor stays authoritative — the caller asks the user to save.
+# so the open PCB editor stays authoritative, then saved to disk by apply().
 
 LIBS_SUBDIR = "libs"
 MODELS_SUBDIR = "3dmodels"
@@ -467,7 +467,7 @@ class ProjectBundler:
 
     def apply(self, plan, progress=None):
         """Performs the bundle. Returns a summary dict. Board changes are made
-        in memory; the caller must save the board."""
+        on the live board and saved to disk."""
         def step(msg):
             if progress:
                 progress(msg)
@@ -505,6 +505,9 @@ class ProjectBundler:
 
         step("Relinking board...")
         changed_fps = self._relink_board(plan, model_map)
+        if changed_fps:
+            step("Saving board...")
+            self._save_board(model_map)
 
         step("Updating project library tables...")
         if plan.symbols:
@@ -725,6 +728,18 @@ class ProjectBundler:
                     touched = True
             changed += touched
         return changed
+
+    def _save_board(self, model_map):
+        """Writes the relinked board to disk. Edits made through Python do not
+        mark the editor as modified, so Ctrl+S is a no-op and closing the
+        project discards them silently — the board must be saved here."""
+        import pcbnew
+        pcbnew.SaveBoard(self.pcb_file, self.board)
+        text = _read(self.pcb_file)
+        missing = [p for p in set(model_map.values()) if '(model ' + _q(p) not in text]
+        if missing and any(m.m_Filename in missing for fp in self.board.GetFootprints() for m in fp.Models()):
+            raise RuntimeError("The board was saved but the relinked 3D model paths are missing from "
+                               f"{os.path.basename(self.pcb_file)}.")
 
     def _add_to_table(self, filename, root_token, uri):
         path = os.path.join(self.project_dir, filename)
