@@ -45,6 +45,12 @@ def _action_text_colour() -> wx.Colour:
     return _btn_text_colour() if _IS_MAC else wx.Colour(0, 0, 0)
 
 
+def _parse_version(v):
+    """'1.2.10' -> (1, 2, 10); trailing labels ('1.3.0-beta') are ignored."""
+    parts = [int(x) for x in re.findall(r'\d+', v.split('-')[0])[:3]]
+    return tuple(parts + [0] * (3 - len(parts)))
+
+
 def _make_action_button(parent, label, light=None, dark=None, size=(-1, 40)):
     """Creates a coloured action button that matches the platform convention:
     native wx.Button on Windows, owner-drawn GenButton on macOS. Pass light/dark
@@ -59,7 +65,8 @@ def _make_action_button(parent, label, light=None, dark=None, size=(-1, 40)):
     return btn
 
 from .utils import (CREATE_NO_WINDOW, git_network_kwargs, project_files, load_settings, save_settings,
-                    get_last_target, save_last_target, load_project_settings, save_project_settings)
+                    get_last_target, save_last_target, load_project_settings, save_project_settings,
+                    get_installed_version, fetch_json)
 from .ui_dialogs import SettingsDialog, CommitDialog, Model3DSettingsDialog, BundlePreviewDialog
 from .diff_engine import DiffEngine
 from .diff_window import DiffWindow
@@ -70,7 +77,7 @@ from .jlcpcb_exporter import JLCPCBExporter
 from .model_exporter import Model3DExporter
 from .schematic_exporter import SchematicExporter
 from .jlcpcb_rules import set_jlcpcb_constraints
-from .project_bundler import ProjectBundler
+from .project_bundler import ProjectBundler, BUNDLE_DESCR
 
 class _no_busy_cursor:
     """Temporarily clears the (nestable) busy cursor so a modal dialog shown
@@ -232,6 +239,15 @@ class CommandCenterDialog(wx.Dialog):
         btn_bundle.Bind(wx.EVT_BUTTON, self.on_bundle_libraries)
         sizer_local.Add(btn_bundle, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=5)
 
+        # Per-project switch, stored in the committed project settings so it
+        # follows the project to every machine.
+        self.cb_keep_bundled = wx.CheckBox(self.scroll_panel, label="Keep this project's libraries bundled")
+        self.cb_keep_bundled.SetToolTip("Saved with the project for everyone. Before each commit, parts added from "
+                                        "outside the project library are offered for bundling.")
+        self.cb_keep_bundled.SetValue(bool(self._bundle_settings().get('enabled')))
+        self.cb_keep_bundled.Bind(wx.EVT_CHECKBOX, self.on_keep_bundled_toggle)
+        sizer_local.Add(self.cb_keep_bundled, flag=wx.LEFT | wx.RIGHT | wx.BOTTOM, border=5)
+
         # --- Manual file generation (hidden unless enabled in Settings) ---
         self.btn_gen = _make_action_button(self.scroll_panel, "Generate Project Files", (255, 235, 200), (150, 110, 30))
         self.btn_gen.SetToolTip("Run all enabled file generation now (BOMs, Gerbers, 3D model, renders, schematic, README) without committing.")
@@ -338,30 +354,20 @@ class CommandCenterDialog(wx.Dialog):
 
     def _check_for_updates(self):
         try:
-            metadata_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "metadata.json")
-            with open(metadata_path, "r") as f:
-                metadata = json.load(f)
-            versions = metadata.get("versions", [])
-            current = versions[0].get("version", "0.0.0") if versions else "0.0.0"
+            current = get_installed_version()
+            if not current:
+                return  # unknown version: never nag with a possibly-wrong prompt
 
-            api_url = "https://api.github.com/repos/MHeis22/KiCad-GitHub-Command-Center/releases/latest"
-            req = urllib.request.Request(api_url, headers={"User-Agent": "KiCad-GitHub-Command-Center"})
-            with urllib.request.urlopen(req, timeout=8) as resp:
-                data = json.loads(resp.read().decode())
-
-            latest_tag = data.get("tag_name", "").lstrip("v")
+            data = fetch_json("https://api.github.com/repos/MHeis22/KiCad-GitHub-Command-Center/releases/latest")
+            latest_tag = data.get("tag_name", "").lstrip("vV")
             release_url = data.get("html_url", "")
 
-            def _parse(v):
-                try:
-                    return tuple(int(x) for x in v.split("."))
-                except Exception:
-                    return (0, 0, 0)
-
-            if _parse(latest_tag) > _parse(current):
+            if _parse_version(latest_tag) > _parse_version(current):
                 wx.CallAfter(self._show_update_prompt, current, latest_tag, release_url)
-        except Exception:
-            pass  # silently ignore network errors on startup
+        except Exception as e:
+            # Not worth a dialog (offline is normal), but leave a trace in the
+            # scripting console instead of failing invisibly.
+            print(f"GitHub Command Center: update check failed: {e}")
 
     def _show_update_prompt(self, current, latest, release_url):
         if not self._alive:
@@ -1225,6 +1231,12 @@ class CommandCenterDialog(wx.Dialog):
         gerbers_on = self.settings.get('generate_gerbers_zip', False)
         auto_readme = self.settings.get('auto_readme', False)
 
+        # An empty board (no parts, copper or outline yet) has nothing to show:
+        # its STEP, renders and gerbers would be blank files, so skip them.
+        if pcb_file and (export_step or render_image or gerbers_on) and self._board_is_empty(pcb_file):
+            print("GitHub Command Center: PCB is empty - skipping STEP, render and gerber generation.")
+            export_step = render_image = gerbers_on = False
+
         # Ask what goes in the BOM up front, before any long-running work, so
         # the user isn't interrupted halfway through generation.
         bom_gen, bom_opts = self._ask_bom_options()
@@ -1359,6 +1371,23 @@ class CommandCenterDialog(wx.Dialog):
                 dlg.ShowModal()
                 dlg.Destroy()
 
+    @staticmethod
+    def _board_is_empty(pcb_file):
+        """True when the board has no footprints, tracks, zones or drawings.
+        Uses the open board when it is this file (it may be unsaved), else the
+        file on disk."""
+        board = pcbnew.GetBoard()
+        if board and os.path.normcase(os.path.abspath(board.GetFileName() or '')) == \
+                os.path.normcase(os.path.abspath(pcb_file)):
+            return not (len(board.GetFootprints()) or len(board.GetTracks())
+                        or board.GetAreaCount() or len(board.GetDrawings()))
+        try:
+            with open(pcb_file, encoding='utf-8') as f:
+                text = f.read()
+        except OSError:
+            return False
+        return not re.search(r'\((?:footprint|segment|arc|via|zone|gr_\w+)\s', text)
+
     def _ask_bom_options(self):
         """Shows the BOM options dialog when a BOM is enabled in the settings.
         Returns (generator, options), or (None, None) to skip the BOM."""
@@ -1392,10 +1421,51 @@ class CommandCenterDialog(wx.Dialog):
         gen.mpn_field = new_settings['mpn_field_name']
         return gen, options
 
+    def _bundle_settings(self):
+        """The project's bundle switch. It lives in the committed per-project
+        settings, so it follows the project to every machine and teammate.
+        Projects bundled before the switch existed are recognised by the
+        bundled library entry in their project library table."""
+        cfg = load_project_settings(self.project_dir).get('bundle_libraries')
+        if cfg is None:
+            for table in ('fp-lib-table', 'sym-lib-table'):
+                try:
+                    with open(os.path.join(self.project_dir, table), encoding='utf-8') as f:
+                        if BUNDLE_DESCR in f.read():
+                            return {'enabled': True, 'include_stock': False}
+                except OSError:
+                    pass
+            return {'enabled': False, 'include_stock': False}
+        return cfg
+
+    def _save_bundle_settings(self, enabled, include_stock):
+        proj = load_project_settings(self.project_dir)
+        proj['bundle_libraries'] = {'enabled': enabled, 'include_stock': include_stock}
+        save_project_settings(self.project_dir, proj)
+        self.cb_keep_bundled.SetValue(enabled)
+
+    def on_keep_bundled_toggle(self, event):
+        cfg = self._bundle_settings()
+        enabled = self.cb_keep_bundled.GetValue()
+        self._save_bundle_settings(enabled, cfg.get('include_stock', False))
+        if enabled:
+            # Bundle what's there now; if this is cancelled the switch stays on
+            # and the next commit offers it again.
+            self._run_bundle()
+        self.update_git_status()
+
     def on_bundle_libraries(self, event):
+        self._run_bundle()
+
+    def _run_bundle(self, on_commit=False):
         """Copies non-stock symbols/footprints/3D models into <project>/libs and
-        relinks the schematics (on disk) and the open board (in memory)."""
+        relinks the schematics (on disk) and the open board (in memory).
+
+        With on_commit, this is the check made before committing a bundled
+        project: the dialog only appears when parts were added from outside
+        the project library since the last bundle."""
         board = pcbnew.GetBoard()
+        cfg = self._bundle_settings()
         state = {}
 
         def rescan(include_stock):
@@ -1404,16 +1474,27 @@ class CommandCenterDialog(wx.Dialog):
 
         wx.BeginBusyCursor()
         try:
-            plan = rescan(False)
+            plan = rescan(cfg.get('include_stock', False))
         except Exception as e:
             if wx.IsBusy(): wx.EndBusyCursor()
-            wx.MessageBox(f"Could not scan the project libraries:\n{e}", "Bundle Libraries", wx.ICON_ERROR)
+            if not on_commit:
+                wx.MessageBox(f"Could not scan the project libraries:\n{e}", "Bundle Libraries", wx.ICON_ERROR)
+            else:
+                print(f"GitHub Command Center: bundle check skipped: {e}")
             return
         if wx.IsBusy(): wx.EndBusyCursor()
+        if on_commit and plan.is_empty():
+            return
 
-        dlg = BundlePreviewDialog(self, plan, rescan)
+        extra = None
+        if on_commit:
+            extra = ("This project keeps its libraries bundled, but some parts were added from outside the\n"
+                     "project library since the last bundle. Bundle them now, or Cancel to commit without them.")
+        dlg = BundlePreviewDialog(self, plan, rescan, include_stock=cfg.get('include_stock', False),
+                                  intro_extra=extra)
         ok = dlg.ShowModal() == wx.ID_OK
         plan = dlg.plan
+        include_stock = dlg.include_stock()
         dlg.Destroy()
         if not ok:
             return
@@ -1441,6 +1522,8 @@ class CommandCenterDialog(wx.Dialog):
         if wx.IsBusy(): wx.EndBusyCursor()
         pcbnew.Refresh()
         self._set_status("Libraries bundled.")
+
+        self._save_bundle_settings(True, include_stock)
 
         extra = ("\n\nWarnings:\n" + "\n".join(plan.warnings)) if plan.warnings else ""
         wx.MessageBox(
@@ -1490,6 +1573,11 @@ class CommandCenterDialog(wx.Dialog):
                 create_gi = wx.MessageBox("Create a default .gitignore file for KiCad?", "Create .gitignore?", wx.YES_NO | wx.ICON_QUESTION)
                 if create_gi == wx.YES:
                     self.create_default_gitignore()
+
+        # A bundled project stays bundled: offer to pull in any parts added
+        # from outside the project library since the last bundle.
+        if self._bundle_settings().get('enabled'):
+            self._run_bundle(on_commit=True)
 
         # Extra file generation (3D STEP, renders, schematic, README, BOMs,
         # gerbers) normally runs here as part of committing. When the user opts

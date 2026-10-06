@@ -1,5 +1,6 @@
 import os
 import re
+import sys
 import json
 import shutil
 import hashlib
@@ -21,12 +22,17 @@ MODELS_SUBDIR = "3dmodels"
 BACKUP_DIR = ".bundle_backup"
 BUNDLE_DESCR = "Bundled by GitHub Command Center"
 
-# ${KICAD9_SYMBOL_DIR}, ${KICAD10_3DMODEL_DIR}, ... — KiCad's stock library variables.
-_STOCK_VAR_RE = re.compile(r'^\$\{KICAD\d*_(?:SYMBOL|FOOTPRINT|3DMODEL)_DIR\}')
+# ${KICAD9_SYMBOL_DIR}, ${KICAD10_3DMODEL_DIR}, ... — KiCad's stock library variables,
+# plus the KiCad 5 names (KISYSMOD, KISYS3DMOD) still found in long-lived tables.
+_STOCK_VAR_RE = re.compile(r'^\$\{(?:KICAD\d*_(?:SYMBOL|FOOTPRINT|3DMODEL)_DIR|KISYSMOD|KISYS3DMOD)\}')
 _STOCK_VAR_NAME_RE = re.compile(r'^KICAD\d*_(?:SYMBOL|FOOTPRINT|3DMODEL)_DIR$')
 _VAR_RE = re.compile(r'\$\{([^}]+)\}|\$\(([^)]+)\)')
-_LIB_ENTRY_RE = re.compile(
-    r'\(lib\s+\(name\s+"((?:[^"\\]|\\.)*)"\)\s*\(type\s+"([^"]*)"\)\s*\(uri\s+"((?:[^"\\]|\\.)*)"\)')
+# Library tables written by older KiCad versions leave tokens unquoted
+# ("(lib (name Capacitor_SMD)(type KiCad)(uri ${KISYSMOD}/...)"), and KiCad
+# never rewrites a table it only reads, so both forms must be accepted.
+_TOK = r'(?:"((?:[^"\\]|\\.)*)"|([^\s()"]+))'
+_LIB_START_RE = re.compile(r'\(lib\s')
+_LIB_FIELD_RE = {k: re.compile(r'\(' + k + r'\s+' + _TOK + r'\s*\)') for k in ('name', 'type', 'uri')}
 _SCH_VERSION_RE = re.compile(r'\(version\s+(\d+)\)')
 _DEFAULT_SYM_LIB_VERSION = 20241209
 
@@ -144,6 +150,29 @@ def _safe_part(s):
     return re.sub(r'[^A-Za-z0-9_.-]+', '_', s).strip('_') or "lib"
 
 
+def _tok(m, i=1):
+    """Value of a _TOK match whose groups start at `i` (quoted or bare)."""
+    q, bare = m.group(i), m.group(i + 1)
+    return _unq(q) if q is not None else bare
+
+
+def _parse_lib_table(text):
+    """Yields (name, type, uri) for each (lib ...) entry of a library table,
+    whatever the field order or quoting."""
+    for m in _LIB_START_RE.finditer(text):
+        try:
+            entry = text[m.start():_sexpr_end(text, m.start())]
+        except ValueError:
+            continue
+        fields = {}
+        for k, pat in _LIB_FIELD_RE.items():
+            fm = pat.search(entry)
+            if fm:
+                fields[k] = _tok(fm)
+        if 'name' in fields and 'uri' in fields:
+            yield fields['name'], fields.get('type', 'KiCad'), fields['uri']
+
+
 # ---------------------------------------------------------------------------
 # Plan
 # ---------------------------------------------------------------------------
@@ -160,11 +189,14 @@ class BundlePlan:
         self.footprints = {}
         # original model string -> {'src', 'dest_name'}
         self.models = {}
+        # "lib:name" -> "nickname:name" for schematic Footprint fields whose
+        # library is gone but whose footprint is already in the project library.
+        self.field_remaps = {}
         self.warnings = []
         self.skipped_stock = {'symbols': 0, 'footprints': 0}
 
     def is_empty(self):
-        return not (self.symbols or self.footprints or self.models)
+        return not (self.symbols or self.footprints or self.models or self.field_remaps)
 
 
 class ProjectBundler:
@@ -200,7 +232,12 @@ class ProjectBundler:
             return pcbnew.SETTINGS_MANAGER.GetUserSettingsPath()
         except Exception:
             pass
-        base = os.environ.get('APPDATA') or os.path.expanduser('~/.config')
+        if os.name == 'nt':
+            base = os.environ.get('APPDATA') or os.path.expanduser('~')
+        elif sys.platform == 'darwin':
+            base = os.path.expanduser('~/Library/Preferences')
+        else:
+            base = os.environ.get('XDG_CONFIG_HOME') or os.path.expanduser('~/.config')
         root = os.path.join(base, 'kicad')
         try:
             versions = sorted((d for d in os.listdir(root) if re.match(r'^\d+\.\d+$', d)),
@@ -220,7 +257,43 @@ class ProjectBundler:
             pass
         env.update(os.environ)
         env['KIPRJMOD'] = self.project_dir
+        # Fill in stock dirs KiCad didn't export (headless runs) from the install
+        # location, then alias the legacy names to the current ones.
+        for kind, sub in (('SYMBOL', 'symbols'), ('FOOTPRINT', 'footprints'), ('3DMODEL', '3dmodels')):
+            if not any(_STOCK_VAR_NAME_RE.match(k) and kind in k and v for k, v in env.items()):
+                guess = self._install_share_dir(sub)
+                if guess:
+                    env[f'KICAD_{kind}_DIR'] = guess
+        for legacy, kind in (('KISYSMOD', 'FOOTPRINT'), ('KISYS3DMOD', '3DMODEL')):
+            if not env.get(legacy):
+                current = [v for k, v in sorted(env.items()) if _STOCK_VAR_NAME_RE.match(k) and kind in k and v]
+                if current:
+                    env[legacy] = current[-1]
         return env
+
+    @staticmethod
+    def _install_share_dir(sub):
+        """KiCad's stock library folder, found by walking up from the KiCad
+        binaries this code runs with (kicad-cli, KiCad's Python, pcbnew)."""
+        starts = [os.path.realpath(find_kicad_cli()), sys.executable]
+        try:
+            import pcbnew
+            starts.append(pcbnew.__file__)
+        except Exception:
+            pass
+        for start in starts:
+            d = os.path.dirname(os.path.abspath(start or ''))
+            for _ in range(8):
+                for cand in (os.path.join(d, 'SharedSupport', sub),        # macOS app bundle
+                             os.path.join(d, 'share', 'kicad', sub)):      # Windows / Linux
+                    if os.path.isdir(cand):
+                        return os.path.normpath(cand)
+                parent = os.path.dirname(d)
+                if parent == d:
+                    break
+                d = parent
+        cand = os.path.join('/usr/share/kicad', sub)
+        return cand if os.path.isdir(cand) else None
 
     def _expand(self, raw):
         def sub(m):
@@ -238,13 +311,22 @@ class ProjectBundler:
         """nickname -> raw uri. Project table entries override global ones."""
         table = {}
         for path in (os.path.join(self._user_settings_dir(), name), os.path.join(self.project_dir, name)):
-            try:
-                text = _read(path)
-            except OSError:
-                continue
-            for m in _LIB_ENTRY_RE.finditer(text):
-                table[_unq(m.group(1))] = _unq(m.group(3))
+            self._read_table(path, table, depth=0)
         return table
+
+    def _read_table(self, path, table, depth):
+        try:
+            text = _read(path)
+        except OSError:
+            return
+        for lib, typ, uri in _parse_lib_table(text):
+            if typ.lower() == 'table':
+                # Nested table (KiCad 9+): its entries count as if listed here.
+                nested = self._expand(uri)
+                if nested and depth < 4:
+                    self._read_table(nested, table, depth + 1)
+                continue
+            table[lib] = uri
 
     def _stock_dirs(self):
         dirs = set()
@@ -252,6 +334,16 @@ class ProjectBundler:
             if _STOCK_VAR_NAME_RE.match(k) and v:
                 dirs.add(os.path.normcase(os.path.normpath(v)))
         return dirs
+
+    def _stock_lib_uri(self, lib, kind):
+        """Stock library URI for a nickname missing from every table, found by
+        name in KiCad's stock folders — the library table on this machine may
+        be incomplete or customised, but the part is still a stock part."""
+        var_kind, suffix = ('SYMBOL', '.kicad_sym') if kind == "Symbol" else ('FOOTPRINT', '.pretty')
+        for k, v in sorted(self.env.items()):
+            if _STOCK_VAR_NAME_RE.match(k) and var_kind in k and v and os.path.exists(os.path.join(v, lib + suffix)):
+                return f"${{{k}}}/{lib}{suffix}"
+        return None
 
     def _under(self, path, root):
         try:
@@ -331,6 +423,12 @@ class ProjectBundler:
         if lib == self.nickname:
             return False  # already bundled
         raw = table.get(lib)
+        if raw is None or (self._classify(raw) == 'custom' and not os.path.exists(self._expand(raw) or '')):
+            # Missing, or listed with a path that doesn't exist on this machine
+            # (e.g. a table carried over from another computer).
+            stock = self._stock_lib_uri(lib, kind)
+            if stock is not None:
+                raw = table[lib] = stock
         if raw is None:
             plan.warnings.append(f"{kind} library '{lib}' is not in any library table; "
                                  f"its parts are taken from the copies stored in the design where possible.")
@@ -417,7 +515,11 @@ class ProjectBundler:
             if lib_dir and os.path.isfile(os.path.join(lib_dir, name + '.kicad_mod')):
                 src = os.path.join(lib_dir, name + '.kicad_mod')
             if src is None and (lib, name) not in refs:
-                plan.warnings.append(f"Footprint '{lib}:{name}' (schematic field) not found; skipped.")
+                bundled = self._bundled_footprint_name(plan, name)
+                if bundled:
+                    plan.field_remaps[f"{lib}:{name}"] = f"{self.nickname}:{bundled}"
+                else:
+                    plan.warnings.append(f"Footprint '{lib}:{name}' (schematic field) not found; skipped.")
                 continue
             origin = "library file" if src else "board copy"
 
@@ -430,7 +532,23 @@ class ProjectBundler:
             used_names.setdefault(new_name, ident)
             plan.footprints[(lib, name)] = {'new_name': new_name, 'src': src, 'origin': origin,
                                             'board_fp': refs.get((lib, name))}
+
+        # A missing library whose every part was resolved by a remap isn't worth a warning.
+        remapped_only = ({k.split(':', 1)[0] for k in plan.field_remaps}
+                         - {lib for lib, _ in plan.footprints})
+        plan.warnings = [w for w in plan.warnings
+                         if not any(w.startswith(f"Footprint library '{lib}' is not in any") for lib in remapped_only)]
         return board_fps
+
+    def _bundled_footprint_name(self, plan, name):
+        """Name under which footprint `name` is (or is about to be) in the
+        project library, or None."""
+        for (_, n), info in plan.footprints.items():
+            if n == name:
+                return info['new_name']
+        if os.path.isfile(os.path.join(self.fp_lib_path, name + '.kicad_mod')):
+            return name
+        return None
 
     def _scan_models(self, plan, board_fps):
         raw_models = []
@@ -482,6 +600,7 @@ class ProjectBundler:
 
         os.makedirs(self.libs_dir, exist_ok=True)
         fp_map = {f"{lib}:{name}": f"{self.nickname}:{i['new_name']}" for (lib, name), i in plan.footprints.items()}
+        fp_map.update(plan.field_remaps)
         model_map = {raw: self.new_model_path(i['dest_name']) for raw, i in plan.models.items()}
 
         if plan.models:
@@ -499,6 +618,12 @@ class ProjectBundler:
         if plan.symbols:
             step("Writing symbol library...")
             self._write_symbols(plan, fp_map)
+        elif plan.field_remaps and os.path.isfile(self.sym_lib_path):
+            # Symbols bundled earlier can carry the stale footprint links too.
+            text = _read(self.sym_lib_path)
+            fixed = self._rewrite_fp_fields(text, fp_map)
+            if fixed != text:
+                _write(self.sym_lib_path, fixed)
 
         step("Relinking schematics...")
         changed_sheets = self._relink_schematics(plan, fp_map)
@@ -747,11 +872,11 @@ class ProjectBundler:
                  f'(options "") (descr {_q(BUNDLE_DESCR)}))')
         if os.path.exists(path):
             text = _read(path)
-            for m in _LIB_ENTRY_RE.finditer(text):
-                if _unq(m.group(1)) == self.nickname:
-                    if _unq(m.group(3)) != uri:
+            for name, _, existing in _parse_lib_table(text):
+                if name == self.nickname:
+                    if existing != uri:
                         raise RuntimeError(f"{filename} already has a '{self.nickname}' library "
-                                           f"pointing elsewhere ({_unq(m.group(3))}).")
+                                           f"pointing elsewhere ({existing}).")
                     return
             end = text.rstrip().rfind(')')
             text = text[:end].rstrip('\n') + '\n' + entry + '\n)\n'

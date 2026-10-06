@@ -30,6 +30,52 @@ def project_files(project_dir, ext):
     return sorted(p for p in glob.glob(os.path.join(project_dir, "*" + ext))
                   if not os.path.basename(p).startswith(TMP_OLD_PREFIX))
 
+PCM_IDENTIFIER = "com.github.mheis22.kicad-github-command-center"
+
+def get_installed_version():
+    """The plugin's own version string, or None if it can't be determined.
+
+    A source checkout has metadata.json next to plugins/. A PCM install does
+    not (PCM only copies plugins/), so the version comes from KiCad's record
+    of installed packages instead."""
+    try:
+        with open(os.path.join(os.path.dirname(os.path.dirname(__file__)), "metadata.json"), encoding="utf-8") as f:
+            versions = json.load(f).get("versions") or []
+        if versions and versions[0].get("version"):
+            return versions[0]["version"]
+    except Exception:
+        pass
+    try:
+        import pcbnew
+        settings_dir = pcbnew.SETTINGS_MANAGER.GetUserSettingsPath()
+        with open(os.path.join(settings_dir, "installed_packages.json"), encoding="utf-8") as f:
+            for pkg in json.load(f).get("packages", []):
+                if pkg.get("package", {}).get("identifier") == PCM_IDENTIFIER:
+                    return pkg.get("current_version")
+    except Exception as e:
+        print(f"GitHub Command Center: could not read the installed version: {e}")
+    return None
+
+def fetch_json(url, timeout=8):
+    """GETs a JSON document. Falls back to the system curl when Python's own
+    TLS setup fails — KiCad's bundled Python on macOS ships without CA
+    certificates, so urllib can't verify github.com there."""
+    import urllib.request
+    req = urllib.request.Request(url, headers={"User-Agent": "KiCad-GitHub-Command-Center"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode())
+    except Exception as e:
+        curl = shutil.which("curl")
+        if not curl:
+            raise
+        res = subprocess.run([curl, "-fsSL", "--max-time", str(timeout), "-H",
+                              "User-Agent: KiCad-GitHub-Command-Center", url],
+                             capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
+        if res.returncode != 0:
+            raise RuntimeError(f"{e}; curl: {res.stderr.strip()}")
+        return json.loads(res.stdout)
+
 def get_settings_path():
     """Returns the path for the global plugin settings file."""
     return os.path.expanduser('~/.kicad_git_diff_settings.json')

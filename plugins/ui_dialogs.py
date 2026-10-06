@@ -475,7 +475,7 @@ class BundlePreviewDialog(wx.Dialog):
     changed. `rescan(include_stock)` must return a fresh BundlePlan; it is called
     again when the 'include stock parts' box is toggled."""
 
-    def __init__(self, parent, plan, rescan):
+    def __init__(self, parent, plan, rescan, include_stock=False, intro_extra=None):
         super().__init__(parent, title="Bundle Libraries into Project", size=(720, 640),
                          style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER)
         self.plan = plan
@@ -489,6 +489,10 @@ class BundlePreviewDialog(wx.Dialog):
         ))
         intro.SetForegroundColour(wx.Colour(100, 100, 100))
         vbox.Add(intro, flag=wx.ALL, border=15)
+        if intro_extra:
+            extra = wx.StaticText(self, label=intro_extra)
+            extra.SetForegroundColour(wx.Colour(170, 90, 0))
+            vbox.Add(extra, flag=wx.LEFT | wx.RIGHT | wx.BOTTOM, border=15)
 
         self.list = wx.ListCtrl(self, style=wx.LC_REPORT | wx.BORDER_SUNKEN)
         self.list.InsertColumn(0, "Type", width=90)
@@ -505,6 +509,7 @@ class BundlePreviewDialog(wx.Dialog):
         self.cb_stock = wx.CheckBox(self, label="Include stock KiCad parts too")
         self.cb_stock.SetToolTip("Stock libraries ship with KiCad, so teammates already have them. "
                                  "Enable only if you want the project fully self-contained.")
+        self.cb_stock.SetValue(include_stock)
         self.cb_stock.Bind(wx.EVT_CHECKBOX, self.on_stock_toggle)
         vbox.Add(self.cb_stock, flag=wx.ALL, border=15)
 
@@ -536,6 +541,8 @@ class BundlePreviewDialog(wx.Dialog):
             rows.append(("Footprint", f"{lib}:{name}", f"{p.nickname}:{i['new_name']}  ({i['origin']})"))
         for raw, i in sorted(p.models.items()):
             rows.append(("3D model", os.path.basename(i['src']), f"libs/3dmodels/{i['dest_name']}"))
+        for old, new in sorted(p.field_remaps.items()):
+            rows.append(("Fp. link", old, f"{new}  (already bundled)"))
         for r in rows:
             idx = self.list.InsertItem(self.list.GetItemCount(), r[0])
             self.list.SetItem(idx, 1, r[1])
@@ -543,6 +550,8 @@ class BundlePreviewDialog(wx.Dialog):
 
         stock = p.skipped_stock
         text = (f"{len(p.symbols)} symbols, {len(p.footprints)} footprints, {len(p.models)} 3D models to bundle.")
+        if p.field_remaps:
+            text += f"  {len(p.field_remaps)} stale footprint link(s) to fix."
         if stock['symbols'] or stock['footprints']:
             text += f"  Stock parts left linked to KiCad libraries: {stock['symbols']} symbols, {stock['footprints']} footprints."
         if p.is_empty():
