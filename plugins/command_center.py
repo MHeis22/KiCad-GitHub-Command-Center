@@ -64,10 +64,11 @@ def _make_action_button(parent, label, light=None, dark=None, size=(-1, 40)):
         btn.SetForegroundColour(_action_text_colour())
     return btn
 
-from .utils import (CREATE_NO_WINDOW, git_network_kwargs, project_files, load_settings, save_settings,
+from .utils import (CREATE_NO_WINDOW, git_network_kwargs, project_files,
+                    load_effective_settings, save_effective_settings,
                     get_last_target, save_last_target, load_project_settings, save_project_settings,
                     get_installed_version, fetch_json)
-from .ui_dialogs import SettingsDialog, CommitDialog, Model3DSettingsDialog, BundlePreviewDialog
+from .ui_dialogs import SettingsDialog, CommitDialog, BundlePreviewDialog
 from .diff_engine import DiffEngine
 from .diff_window import DiffWindow
 from .readme_generator import ReadmeGenerator
@@ -97,7 +98,7 @@ class _no_busy_cursor:
 
 class CommandCenterDialog(wx.Dialog):
     def __init__(self, parent, project_dir):
-        super().__init__(parent, title="Git Command Center", style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER)
+        super().__init__(parent, title="GitHub Command Center", style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER)
         self.project_dir = project_dir
         self.git_cmd = "git.exe" if os.name == "nt" else "git"
         self.engine = DiffEngine(self.project_dir)
@@ -112,7 +113,7 @@ class CommandCenterDialog(wx.Dialog):
         self._kicad_version = None
         self._kicad_version_lock = threading.Lock()
         threading.Thread(target=self._warm_kicad_version, daemon=True).start()
-        self.settings = load_settings()
+        self.settings = load_effective_settings(project_dir)
         
         self.main_panel = wx.Panel(self)
         self.outer_vbox = wx.BoxSizer(wx.VERTICAL)
@@ -122,8 +123,8 @@ class CommandCenterDialog(wx.Dialog):
         self.scroll_panel.SetScrollRate(10, 10)
         self.scroll_vbox = wx.BoxSizer(wx.VERTICAL)
         
-        # --- Header ---
-        header = wx.StaticText(self.scroll_panel, label="Git Hardware Control")
+        # --- Header: the project, since the title bar already names the plugin ---
+        header = wx.StaticText(self.scroll_panel, label=os.path.basename(os.path.normpath(self.project_dir)))
         header_font = header.GetFont()
         header_font.SetWeight(wx.FONTWEIGHT_BOLD)
         header_font.SetPointSize(12)
@@ -214,30 +215,24 @@ class CommandCenterDialog(wx.Dialog):
         sizer_local.Add(btn_switch, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=5)
         sizer_local.Add(stash_sizer, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=5)
         sizer_local.Add(btn_tag, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=5)
+        self.scroll_vbox.Add(sizer_local, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=10)
 
-        # --- JLCPCB Constraints Enforcer ---
+        # ==========================================
+        # GROUP 3b: Project Tools (outputs are configured in Settings)
+        # ==========================================
+        box_tools = wx.StaticBox(self.scroll_panel, label="Project Tools")
+        sizer_tools = wx.StaticBoxSizer(box_tools, wx.VERTICAL)
+
         btn_jlc_rules = _make_action_button(self.scroll_panel, "Set JLCPCB Safe Constraints (Free Tier)", (230, 230, 250), (90, 70, 160))
         btn_jlc_rules.Bind(wx.EVT_BUTTON, self.on_set_jlc_constraints)
-        sizer_local.Add(btn_jlc_rules, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=5)
-
-        # JLCPCB Gerber generation toggle
-        self.cb_gerbers = wx.CheckBox(self.scroll_panel, label="Auto-Generate JLCPCB Gerbers on Commit")
-        self.cb_gerbers.SetValue(self.settings.get('generate_gerbers_zip', False))
-        self.cb_gerbers.Bind(wx.EVT_CHECKBOX, self.on_gerber_toggle)
-        sizer_local.Add(self.cb_gerbers, flag=wx.LEFT | wx.RIGHT | wx.BOTTOM, border=5)
-
-        # --- 3D Model & Render Settings ---
-        btn_3d = _make_action_button(self.scroll_panel, "3D Model and Render Settings...", (230, 230, 250), (90, 70, 160))
-        btn_3d.SetToolTip("Configure STEP model export and PCB image rendering generated on commit.")
-        btn_3d.Bind(wx.EVT_BUTTON, self.on_3d_settings)
-        sizer_local.Add(btn_3d, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=5)
+        sizer_tools.Add(btn_jlc_rules, flag=wx.EXPAND | wx.ALL, border=5)
 
         # --- Bundle personal libraries into the project ---
         btn_bundle = _make_action_button(self.scroll_panel, "Bundle Libraries into Project...", (230, 230, 250), (90, 70, 160))
         btn_bundle.SetToolTip("Copy the non-stock symbols, footprints and 3D models this project uses into /libs "
                               "and relink the design, so teammates can open it without your personal libraries.")
         btn_bundle.Bind(wx.EVT_BUTTON, self.on_bundle_libraries)
-        sizer_local.Add(btn_bundle, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=5)
+        sizer_tools.Add(btn_bundle, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=5)
 
         # Per-project switch, stored in the committed project settings so it
         # follows the project to every machine.
@@ -246,15 +241,15 @@ class CommandCenterDialog(wx.Dialog):
                                         "outside the project library are offered for bundling.")
         self.cb_keep_bundled.SetValue(bool(self._bundle_settings().get('enabled')))
         self.cb_keep_bundled.Bind(wx.EVT_CHECKBOX, self.on_keep_bundled_toggle)
-        sizer_local.Add(self.cb_keep_bundled, flag=wx.LEFT | wx.RIGHT | wx.BOTTOM, border=5)
+        sizer_tools.Add(self.cb_keep_bundled, flag=wx.LEFT | wx.RIGHT | wx.BOTTOM, border=5)
 
         # --- Manual file generation (hidden unless enabled in Settings) ---
         self.btn_gen = _make_action_button(self.scroll_panel, "Generate Project Files", (255, 235, 200), (150, 110, 30))
-        self.btn_gen.SetToolTip("Run all enabled file generation now (BOMs, Gerbers, 3D model, renders, schematic, README) without committing.")
+        self.btn_gen.SetToolTip("Run all enabled outputs now (BOMs, Gerbers, 3D model, renders, schematic, README) without committing.")
         self.btn_gen.Bind(wx.EVT_BUTTON, self.on_generate_files)
-        sizer_local.Add(self.btn_gen, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=5)
+        sizer_tools.Add(self.btn_gen, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=5)
 
-        self.scroll_vbox.Add(sizer_local, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=10)
+        self.scroll_vbox.Add(sizer_tools, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=10)
 
         # ==========================================
         # GROUP 4: Remote / Sync
@@ -268,10 +263,10 @@ class CommandCenterDialog(wx.Dialog):
         btn_remote = wx.Button(self.scroll_panel, label="Open Remote Web Page", size=(-1, 40))
         btn_remote.Bind(wx.EVT_BUTTON, self.on_open_remote)
 
-        btn_pull = _make_action_button(self.scroll_panel, "Pull Changes from Server")
-        btn_pull.SetToolTip("Downloads new commits from the server and merges them in, "
-                            "keeping your own commits and uncommitted work.")
-        btn_pull.Bind(wx.EVT_BUTTON, self.on_pull)
+        self.btn_pull = _make_action_button(self.scroll_panel, "Pull Changes from Server")
+        self.btn_pull.SetToolTip("Downloads new commits from the server and merges them in, "
+                                 "keeping your own commits and uncommitted work.")
+        self.btn_pull.Bind(wx.EVT_BUTTON, self.on_pull)
 
         btn_sync = _make_action_button(self.scroll_panel, "Force Download from Server (discard local)", (255, 200, 200), (160, 50, 50))
         btn_sync.SetToolTip("Replaces your local copy with the server version. "
@@ -279,7 +274,7 @@ class CommandCenterDialog(wx.Dialog):
         btn_sync.Bind(wx.EVT_BUTTON, self.on_force_sync)
 
         sizer_remote.Add(self.btn_push, flag=wx.EXPAND | wx.ALL, border=5)
-        sizer_remote.Add(btn_pull, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=5)
+        sizer_remote.Add(self.btn_pull, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=5)
         sizer_remote.Add(btn_remote, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=5)
         sizer_remote.Add(btn_sync, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=5)
         self.scroll_vbox.Add(sizer_remote, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=10)
@@ -336,6 +331,7 @@ class CommandCenterDialog(wx.Dialog):
         self.update_git_status()
         self._check_and_prompt_git_encoding()
         threading.Thread(target=self._check_for_updates, daemon=True).start()
+        threading.Thread(target=self._check_remote_ahead, daemon=True).start()
 
     def _warm_kicad_version(self):
         """Background probe for the KiCad version (see __init__)."""
@@ -369,6 +365,41 @@ class CommandCenterDialog(wx.Dialog):
             # scripting console instead of failing invisibly.
             print(f"GitHub Command Center: update check failed: {e}")
 
+    def _check_remote_ahead(self):
+        """Background: fetch, and recommend pulling when the server has commits
+        this copy doesn't. Editing an outdated schematic or board leads to
+        conflicts that git can't merge, so it's worth saying up front."""
+        try:
+            if not os.path.isdir(os.path.join(self.project_dir, ".git")):
+                return
+            upstream = self._git(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]).stdout.strip()
+            if not upstream:
+                return  # branch doesn't track a server branch
+            remote = upstream.split('/', 1)[0]
+            if self._git(["fetch", "--quiet", remote], network=True).returncode != 0:
+                return  # offline or no credentials: say nothing
+            behind = int(self._git(["rev-list", "--count", f"HEAD..{upstream}"]).stdout.strip() or 0)
+            if behind:
+                latest = self._git(["log", "-1", "--format=%s (%an, %cr)", upstream]).stdout.strip()
+                wx.CallAfter(self._show_behind_prompt, behind, upstream, latest)
+        except Exception as e:
+            print(f"GitHub Command Center: remote check failed: {e}")
+
+    def _show_behind_prompt(self, behind, upstream, latest):
+        if not self._alive:
+            return
+        self.update_git_status()
+        dlg = wx.MessageDialog(
+            self, f"{upstream} on the server has {behind} commit(s) that your copy doesn't have.\n\n"
+                  f"Latest: {latest}\n\n"
+                  "Pull before editing, so your changes don't conflict with the newer schematic or board.",
+            "Newer Version on the Server", wx.YES_NO | wx.ICON_INFORMATION)
+        dlg.SetYesNoLabels("Pull Now", "Later")
+        go = dlg.ShowModal() == wx.ID_YES
+        dlg.Destroy()
+        if go:
+            self.on_pull(None)
+
     def _show_update_prompt(self, current, latest, release_url):
         if not self._alive:
             return
@@ -385,17 +416,6 @@ class CommandCenterDialog(wx.Dialog):
 
     def on_set_jlc_constraints(self, event):
         set_jlcpcb_constraints(self)
-
-    def on_gerber_toggle(self, event):
-        self.settings['generate_gerbers_zip'] = self.cb_gerbers.GetValue()
-        save_settings(self.settings)
-
-    def on_3d_settings(self, event):
-        dlg = Model3DSettingsDialog(self, self.settings, kicad_version=self.kicad_version)
-        if dlg.ShowModal() == wx.ID_OK:
-            self.settings = dlg.get_settings()
-            save_settings(self.settings)
-        dlg.Destroy()
 
     def _check_and_prompt_git_encoding(self, force_prompt=False):
         if not os.path.isdir(os.path.join(self.project_dir, ".git")):
@@ -445,13 +465,10 @@ class CommandCenterDialog(wx.Dialog):
         self.setup_section_container.Add(btn_setup, flag=wx.EXPAND | wx.ALL, border=5)
 
     def on_settings(self, event):
-        dlg = SettingsDialog(self, self.settings)
+        dlg = SettingsDialog(self, self.settings, kicad_version=self.kicad_version)
         if dlg.ShowModal() == wx.ID_OK:
             self.settings = dlg.get_settings()
-            save_settings(self.settings)
-            
-            # Sync local checkbox with newly saved setting
-            self.cb_gerbers.SetValue(self.settings.get('generate_gerbers_zip', False))
+            save_effective_settings(self.project_dir, self.settings)
             # Show/hide the manual-generation button to match the new mode.
             self._update_gen_button_visibility()
         dlg.Destroy()
@@ -492,6 +509,8 @@ class CommandCenterDialog(wx.Dialog):
             branch_match = re.match(r'^## (\S+?)(?:\.\.\.|\s|$)', first_line)
             curr_branch = branch_match.group(1) if branch_match else "Detached HEAD"
             is_ahead = "[ahead" in first_line
+            behind_m = re.search(r'behind (\d+)', first_line)
+            behind = int(behind_m.group(1)) if behind_m else 0
 
             actual_target = target_raw.split(' ')[0] if ' ' in target_raw else target_raw
 
@@ -511,7 +530,7 @@ class CommandCenterDialog(wx.Dialog):
 
             wx.CallAfter(self._apply_git_status, token, {
                 'curr_branch': curr_branch, 'actual_target': actual_target,
-                'changes': changes, 'is_ahead': is_ahead,
+                'changes': changes, 'is_ahead': is_ahead, 'behind': behind,
                 'uncommitted_changes': uncommitted_changes,
             }, None)
         except Exception as e:
@@ -532,6 +551,8 @@ class CommandCenterDialog(wx.Dialog):
                 status_text += f"Status: {data['changes']} changes relative to {data['actual_target']}."
             else:
                 status_text += f"Status: Workspace identical to {data['actual_target']}."
+            if data['behind']:
+                status_text += f"\nServer has {data['behind']} newer commit(s) - pull recommended."
             self.status_lbl.SetLabel(status_text)
 
             if hasattr(self, 'btn_commit'):
@@ -557,8 +578,16 @@ class CommandCenterDialog(wx.Dialog):
                 self.btn_push.SetForegroundColour(_action_text_colour())
                 self.btn_push.SetFont(push_font)
 
+                pull_font = self.btn_pull.GetFont()
+                pull_font.SetWeight(wx.FONTWEIGHT_BOLD if data['behind'] else wx.FONTWEIGHT_NORMAL)
+                self.btn_pull.SetFont(pull_font)
+                if data['behind']:
+                    self.btn_pull.SetBackgroundColour(_action_bg((150, 200, 255), (30, 90, 170)))
+                    self.btn_pull.SetForegroundColour(_action_text_colour())
+
                 self.btn_commit.Refresh()
                 self.btn_push.Refresh()
+                self.btn_pull.Refresh()
         except RuntimeError:
             pass  # dialog was destroyed between the CallAfter and now
 
@@ -1305,7 +1334,7 @@ class CommandCenterDialog(wx.Dialog):
                 if gerbers_on:
                     gerber_zip = os.path.join(self.project_dir, "production", "gerbers.zip")
                     if force or pcb_updated or not os.path.exists(gerber_zip):
-                        step("Generating JLCPCB gerbers...")
+                        step("Generating gerbers...")
                         board = pcbnew.GetBoard()
                         if board:
                             JLCPCBExporter(board).generate_zip(self.project_dir, zip_filename="gerbers")
@@ -1413,7 +1442,7 @@ class CommandCenterDialog(wx.Dialog):
         # Remember the choices: outputs and part-number field globally (they
         # mirror the Settings dialog), the rest per project.
         self.settings.update(new_settings)
-        save_settings(self.settings)
+        save_effective_settings(self.project_dir, self.settings)
         proj = load_project_settings(self.project_dir)
         proj['bom_options'] = options
         save_project_settings(self.project_dir, proj)

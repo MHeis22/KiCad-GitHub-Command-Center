@@ -25,10 +25,12 @@ class BOMOptionsDialog(wx.Dialog):
 
         # --- Outputs
         box = wx.StaticBoxSizer(wx.VERTICAL, self, "Files to generate (in production/)")
+        # First run (nothing chosen yet): offer both rather than an empty choice.
+        first = not (settings.get('generate_bom_eng') or settings.get('generate_bom_dist'))
         self.cb_eng = wx.CheckBox(box.GetStaticBox(), label="Engineering BOM (all columns, for review)")
-        self.cb_eng.SetValue(settings.get('generate_bom_eng', False))
+        self.cb_eng.SetValue(first or settings.get('generate_bom_eng', False))
         self.cb_dist = wx.CheckBox(box.GetStaticBox(), label="Distributor BOM (Qty, Reference, part number)")
-        self.cb_dist.SetValue(settings.get('generate_bom_dist', False))
+        self.cb_dist.SetValue(first or settings.get('generate_bom_dist', False))
         box.Add(self.cb_eng, flag=wx.ALL, border=4)
         box.Add(self.cb_dist, flag=wx.ALL, border=4)
 

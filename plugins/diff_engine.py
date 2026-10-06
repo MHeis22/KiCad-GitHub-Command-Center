@@ -10,7 +10,7 @@ import time
 import hashlib
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from .utils import CREATE_NO_WINDOW, find_kicad_cli, TMP_OLD_PREFIX, load_settings
+from .utils import CREATE_NO_WINDOW, find_kicad_cli, TMP_OLD_PREFIX, load_effective_settings
 from .bom_generator import BOMGenerator
 from .kicad_parser import (
     get_pcb_layers, get_pcb_dimensions, get_pcb_structure,
@@ -404,7 +404,7 @@ class DiffEngine:
     def _design_boms(self, target):
         """(current, at-target) whole-design BOM dicts from kicad-cli, or None
         for a side that couldn't be exported (callers fall back per file)."""
-        settings = load_settings()
+        settings = load_effective_settings(self.project_dir)
         curr = old = None
         try:
             curr = BOMGenerator(self.project_dir, settings).bom_dict()

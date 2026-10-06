@@ -101,22 +101,64 @@ def load_project_settings(project_dir):
         return {}
 
 def save_project_settings(project_dir, settings):
-    """Saves per-project settings (only project-specific keys, not global ones)."""
+    """Saves per-project settings. The file is committed with the project, so
+    it is written stably (sorted, indented) and only when it actually changes."""
+    path = get_project_settings_path(project_dir)
+    text = json.dumps(settings, indent=2, sort_keys=True) + "\n"
     try:
-        with open(get_project_settings_path(project_dir), 'w') as f:
-            json.dump(settings, f)
+        try:
+            with open(path, 'r') as f:
+                if f.read() == text:
+                    return
+        except OSError:
+            pass
+        with open(path, 'w', newline='\n') as f:
+            f.write(text)
     except Exception as e:
         print(f"Error saving project settings: {e}")
 
+# How a person works, rather than what the project produces: these stay on
+# this computer. Every other setting is stored with the project.
+PERSONAL_KEYS = ('include_kicad_version', 'silent_pull')
+
+def load_effective_settings(project_dir):
+    """Settings for this project: the project's own values over this
+    computer's. A project that was never configured starts from the values
+    last saved in any project."""
+    settings = load_settings()
+    settings.pop('last_targets', None)  # bookkeeping, managed by get/save_last_target
+    project = load_project_settings(project_dir).get('settings') or {}
+    settings.update({k: v for k, v in project.items() if k not in PERSONAL_KEYS})
+    return settings
+
+def save_effective_settings(project_dir, settings):
+    """Personal keys go to this computer; the rest to the project (and to this
+    computer too, as the starting point for unconfigured projects)."""
+    glob_settings = load_settings()
+    glob_settings.update({k: v for k, v in settings.items() if k != 'last_targets'})
+    save_settings(glob_settings)
+    proj = load_project_settings(project_dir)
+    proj['settings'] = {k: v for k, v in settings.items() if k not in PERSONAL_KEYS and k != 'last_targets'}
+    save_project_settings(project_dir, proj)
+
+def _project_key(project_dir):
+    return os.path.normcase(os.path.abspath(project_dir))
+
 def get_last_target(project_dir):
-    """Returns the last comparison target used for this project, or None."""
-    return load_project_settings(project_dir).get('last_target')
+    """Returns the last comparison target used for this project, or None.
+    Kept on this computer: it's a personal view choice, not project data."""
+    target = (load_settings().get('last_targets') or {}).get(_project_key(project_dir))
+    return target or load_project_settings(project_dir).get('last_target')
 
 def save_last_target(project_dir, target):
     """Persists the last comparison target for this project."""
+    settings = load_settings()
+    settings.setdefault('last_targets', {})[_project_key(project_dir)] = target
+    save_settings(settings)
     proj = load_project_settings(project_dir)
-    proj['last_target'] = target
-    save_project_settings(project_dir, proj)
+    if 'last_target' in proj:  # older versions kept it in the committed project file
+        del proj['last_target']
+        save_project_settings(project_dir, proj)
 
 def save_settings(settings):
     """Saves global settings to the user's home directory."""

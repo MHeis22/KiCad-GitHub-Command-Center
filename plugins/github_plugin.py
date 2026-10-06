@@ -8,7 +8,7 @@ class GithubActionPlugin(pcbnew.ActionPlugin):
     def defaults(self):
         self.name = "GitHub Command Center"
         self.category = "Tool"
-        self.description = "Visual Diff & Force Sync"
+        self.description = "Git version control, visual diffs and manufacturing outputs for this project"
         self.show_toolbar_button = True 
         self.icon_file_name = os.path.join(os.path.dirname(__file__), 'icon.png')
 

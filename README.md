@@ -1,38 +1,39 @@
 # GitHub Command Center
 
-[![Downloads](https://img.shields.io/github/downloads/mheis22/kicad-github-command-center/total.svg?style=flat-square)](https://github.com/mheis22/kicad-github-command-center/releases)
+[![Downloads](https://img.shields.io/github/downloads/MHeis22/KiCad-GitHub-Command-Center/total.svg?style=flat-square)](https://github.com/MHeis22/KiCad-GitHub-Command-Center/releases)
 
-A Git front-end for the KiCad PCB editor. It wraps common Git operations in a dialog, renders visual diffs of your board and schematic between commits, and can generate documentation and manufacturing files when you commit.
+A Git front-end for the KiCad PCB editor. It runs common Git operations from a dialog, shows visual diffs of the board and schematic between commits, and can generate documentation and manufacturing files on commit.
 
-- **Downloads:** https://github.com/mheis22/kicad-github-command-center/releases
+- **Downloads:** https://github.com/MHeis22/KiCad-GitHub-Command-Center/releases
 - **License:** GPL v3
-- **Requirements:** KiCad 7.0+ and Git installed and available on your system `PATH`. PCB image rendering additionally requires KiCad 9.0+.
-
-> **Note:** Git must be installed and on your `PATH` for the plugin to work.
+- **Requirements:** KiCad 7.0+ and Git on the system `PATH`. PCB image rendering and STEP silkscreen need KiCad 9.0+.
 
 ## Features
 
 **Version control**
-- Initialize a repository and link it to a remote, or commit into an existing repo.
-- Commit dialog with per-file selection, status badges (new / modified / deleted / renamed), and a per-file button to add an entry to `.gitignore` and drop it from the commit.
-- Switch branches, stash and pop local changes, push to the remote, and open the remote's web page.
-- Force-sync: reset the local workspace to a remote branch (destructive; asks for confirmation first).
-- Optional "silent pull" of text files (e.g. `.md`, `.csv`) before pushing; aborts automatically if remote schematic or PCB changes are detected.
-- Detects non-ASCII filenames and offers to fix Git's `core.quotePath` setting so commits don't fail.
+- Initialize a repository and link it to a remote, or use an existing one.
+- Commit dialog with per-file selection, status badges (new, modified, deleted, renamed) and a per-file button that adds the file to `.gitignore`.
+- Switch branches, stash and pop changes, create version tags, push, and open the remote's web page.
+- Pull from the server, keeping local commits and uncommitted work. Refuses and offers a force download when both sides changed the same schematic or board.
+- Force download: replace the local copy with a server branch, with an optional backup branch first.
+- Notifies when the server has commits that the local copy doesn't, and offers to pull.
+- Optional silent pull of text files (e.g. `.md`, `.csv`) before pushing; skipped if the server has schematic or PCB changes.
+- Offers to fix Git's `core.quotePath` setting when file names contain non-ASCII characters.
+- Notifies when a newer plugin release is available.
 
 **Visual diff**
-- Renders schematic and PCB changes between the working tree and any commit/branch into a single self-contained HTML file you can open and share.
-- Per-layer view, overlay and swipe comparison, colorblind palette, light/dark theme, and optional DRC/ERC and logical (netlist) comparison tabs.
+- Renders schematic and PCB changes between the working tree and any commit or branch into a single HTML file that can be shared.
+- Per-layer view, overlay and swipe comparison, colorblind palette, light and dark themes, and optional DRC/ERC and netlist comparison.
 
-**Documentation & manufacturing (optional, run on commit)**
-- Auto-generated README summary block: board dimensions, layer count, component counts (SMD/THT), unique parts, via breakdown, architecture (sheets/buses/power domains), mounting holes, DNP list, TODOs, and tables of core ICs, connectors, oscillators and passives. Optionally includes DRC status.
-- BOM export in a distributor format (Qty, Ref, MPN) and/or a more detailed engineering format.
-- JLCPCB gerber ZIP generation, and a button that applies a conservative set of JLCPCB design-rule constraints.
-- 3D STEP model export (to `/3d`) and rendered PCB images (to `/docs`), embedded centered in the README. See below.
-- STEP models, gerbers and renders are skipped on a commit when the PCB file was only re-serialized by KiCad (no real design change), to avoid committing that churn.
+**Documentation and manufacturing** (optional; on commit or on demand)
+- README summary: board size, layer count, SMD/THT counts, unique parts, vias, sheets, buses and power domains, mounting holes, DNP list, TODOs, and tables of ICs, connectors, oscillators and passives. Optionally includes the DRC result.
+- BOM files: a distributor BOM (Qty, Reference, part number) and/or an engineering BOM.
+- Gerber and drill ZIP, plus a button that applies conservative JLCPCB design-rule constraints.
+- 3D STEP model (`/3d`), rendered board images and a dimensioned drawing (`/docs`), and schematic SVGs (`/docs`), embedded in the README.
+- Board outputs are skipped when the board is empty, or when KiCad only re-saved the file without a design change.
 
-**Sharing with a team**
-- **Bundle Libraries into Project**: copies every non-stock symbol, footprint and 3D model the project uses into `/libs` and relinks the schematic and board to a project library (`${KIPRJMOD}`), so teammates can open the project without your personal libraries. See below.
+**Team sharing**
+- **Bundle Libraries into Project** copies the non-stock symbols, footprints and 3D models the project uses into `/libs` and relinks the design, so the project opens without the author's personal libraries.
 
 ## Screenshots
 
@@ -42,7 +43,7 @@ Main window:
   <img src="assets/MainMenu.png" height="600">
 </p>
 
-Shareable HTML visual diff (overlay mode, F.Cu layer):
+HTML visual diff (overlay mode, F.Cu layer):
 
 <p align="center">
   <img src="assets/WebView.png" width="850">
@@ -50,51 +51,41 @@ Shareable HTML visual diff (overlay mode, F.Cu layer):
 
 ## Installation
 
-1. Download the latest release ZIP from the [releases page](https://github.com/mheis22/kicad-github-command-center/releases).
+1. Download the latest release ZIP from the [releases page](https://github.com/MHeis22/KiCad-GitHub-Command-Center/releases).
 2. Open KiCad's **Plugin and Content Manager**.
-3. Click **Install from File...**
-4. Select the downloaded ZIP.
+3. Click **Install from File...** and select the ZIP.
 
 ## Usage
 
-1. Open the PCB Editor in KiCad.
+1. Open the PCB Editor.
 2. Click the GitHub Command Center button in the toolbar.
-3. If the project isn't a Git repository yet, use **Initialize and Link to Remote** to set it up (optionally pasting a remote URL).
-4. Use the dialog to view visual diffs, save a snapshot (commit), switch branches, push, or run the optional generators.
+3. For a project that isn't a Git repository yet, click **Initialize and Link to Remote**.
+4. Use the main window to review changes, commit, switch branches, push and pull. Project tools (JLCPCB constraints, library bundling, manual file generation) are in their own group.
 
 ## Settings
 
-Click **⚙ Settings** in the bottom-left of the main window to configure commit-time automation:
+**⚙ Settings** is in the bottom-left of the main window. Settings are stored in the project's `.kicad_git_plugin.json` and committed, so everyone on the project generates the same files. Options marked *this computer only* are stored locally.
 
 <p align="center">
   <img src="assets/Settings.png" height="480">
 </p>
 
-- **Commit messages:** optionally append the detected KiCad version to each commit message.
-- **Auto-README:** update the generated hardware-summary block on commit, optionally including DRC status.
-- **Silent Pull:** auto-pull safe text files before pushing.
-- **BOM Generation:** enable the distributor and/or engineering BOM, and set the symbol field name used for the manufacturer part number.
-- **Search Engine & Currency:** choose the part-search links (Octopart or ComponentSearchEngine) and currency used in the generated README.
-
-## 3D Model & Render
-
-Click **3D Model & Render Settings...** in the main window to configure 3D output generated on commit:
-
-<p align="center">
-  <img src="assets/3DSettings.png" height="560">
-</p>
-
-- **STEP export** (KiCad 7.0+): writes a `.step` model to `/3d`. Options: substitute similar 3D models when exact ones are missing, exclude DNP components, or export the bare board only.
-- **PCB image render** (KiCad 9.0+): writes a rendered image to `/docs` and embeds it, centered, in the README. Supports rendering both top and bottom, quality (basic or ray-traced), background, view side, and image dimensions. The render controls are disabled if the installed KiCad predates 9.0.
+- **General** *(this computer only)*: append the KiCad version to commit messages; silent pull before pushing.
+- **Outputs:** generate on every commit, or only with the **Generate Project Files** button.
+  - **Gerbers:** gerber and drill ZIP in `/production`. Uses the conventions JLCPCB requires (Protel extensions, merged drill file), which most other fabs also accept.
+  - **Bill of materials:** CSVs in `/production`. The files, part-number field, parts and columns are chosen in the BOM window each time it runs.
+  - **3D STEP** (KiCad 7.0+): `.step` model in `/3d`. Options: substitute similar 3D models, exclude DNP parts, board only, include silkscreen and solder mask (KiCad 9.0+).
+  - **PCB image** (KiCad 9.0+): render in `/docs`. View (including top and bottom as two images), quality, background, image size, and an optional dimensioned top-view drawing.
+  - **Schematic image:** one SVG per sheet in `/docs`; optionally black and white or without the drawing sheet.
+- **README:** hardware summary on/off, DRC result, widths of the embedded images, and the site (Octopart or ComponentSearchEngine) and currency for part links.
 
 ## Bundle Libraries into Project
 
-Click **Bundle Libraries into Project...** in the main window (Schematic Editor must be closed). A preview lists everything that will be copied; stock KiCad parts are left linked to KiCad's built-in libraries unless you tick **Include stock KiCad parts too**.
+**Bundle Libraries into Project...** is under *Project Tools* in the main window. The Schematic Editor must be closed. A preview lists what will be copied. Stock KiCad parts stay linked to KiCad's libraries unless **Include stock KiCad parts too** is ticked.
 
-- Symbols are taken from the schematic's embedded copies and written to `libs/<project>.kicad_sym`.
-- Footprints are copied from their source library (or exported from the board if the library is gone) to `libs/<project>.pretty`.
-- Custom 3D models are copied to `libs/3dmodels` and referenced as `${KIPRJMOD}/libs/3dmodels/...`.
-- `sym-lib-table` / `fp-lib-table` in the project folder get a `<project>` entry; schematics, footprint fields and the open board are relinked to it.
-- Originals are backed up to `.bundle_backup/` (git-ignored). Running it again only adds parts that are new.
+- Symbols are written to `libs/<project>.kicad_sym`, footprints to `libs/<project>.pretty`, and custom 3D models to `libs/3dmodels`.
+- The project's `sym-lib-table` and `fp-lib-table` get a `<project>` entry, and the schematics and board are relinked to it. The board is saved automatically.
+- Original files are backed up to `.bundle_backup/` (git-ignored). Running it again adds only new parts.
+- **Keep this project's libraries bundled** stores the choice in the project. Before each commit, parts added from outside the project library are offered for bundling.
 
-Afterwards, **save the board** and reopen the project, then commit `libs/` and the two lib-table files.
+Afterwards, reopen the project so KiCad loads the new library tables, then commit `libs/` and the two library tables.

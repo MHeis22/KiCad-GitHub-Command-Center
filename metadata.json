@@ -1,8 +1,8 @@
 {
     "$schema": "https://go.kicad.org/pcm/schemas/v2",
     "name": "GitHub Command Center",
-    "description": "Seamlessly integrate Git. Visual diffs, automatic READMEs, BOM generation, and 1-click gerber export and JLCPCB constraint setup.",
-    "description_full": "GitHub Command Center brings powerful version control and manufacturing automation directly into KiCad.\n\nFeatures include:\n- Visual Diff Engine: See exact graphical changes in PCB traces, components, and schematics between commits.\n- Manufacturing Ready: Automatically applies JLCPCB's safest design constraints (rules) and generates 1-click production Gerber ZIPs.\n- Auto-Documentation: Automatically generates and updates your project's README.md with hardware stats and BOM data.\n- Smart Sync: Safely stash, switch branches, and seamlessly auto-pull safe text files, or execute a clean force-sync of the latest remote version.\n\nRequirement: Git must be installed on your system.",
+    "description": "Git for KiCad projects: visual diffs, commit, pull and push, and generated README, BOM, gerber, STEP and render files.",
+    "description_full": "A Git front-end for the KiCad PCB editor.\n\n- Version control: commit with per-file selection, branches, stashes, tags, push, pull and force download. Notifies when the server has newer commits.\n- Visual diff: schematic and PCB changes between any two versions in a shareable HTML file, with per-layer, overlay and swipe views and optional DRC/ERC and netlist comparison.\n- Outputs, on commit or on demand: README hardware summary, BOM files, gerber and drill ZIP, 3D STEP model, board renders and schematic SVGs. Settings are stored per project.\n- Team sharing: bundles personal symbol, footprint and 3D model libraries into the project.\n- JLCPCB design-rule constraints in one click.\n\nRequires Git on the system PATH. Board rendering needs KiCad 9.0+.",
     "identifier": "com.github.mheis22.kicad-github-command-center",
     "type": "plugin",
     "author": {
@@ -17,9 +17,9 @@
     },
     "versions": [
         {
-        "version": "1.2.2",
-        "status": "stable",
-        "kicad_version": "7.0"
+            "version": "1.2.3",
+            "status": "stable",
+            "kicad_version": "7.0"
         }
     ]
 }

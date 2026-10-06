@@ -27,6 +27,11 @@ def render_supported(version_str):
     return parse_major_version(version_str) >= RENDER_MIN_MAJOR
 
 
+def step_silkscreen_supported(version_str):
+    """'--include-silkscreen' for STEP export arrived with KiCad 9.0 as well."""
+    return parse_major_version(version_str) >= RENDER_MIN_MAJOR
+
+
 class Model3DExporter:
     """Wraps kicad-cli to produce a STEP model and a rendered PCB image.
 
@@ -93,6 +98,10 @@ class Model3DExporter:
             cmd.append("--no-dnp")
         if self.settings.get('step_board_only', False):
             cmd.append("--board-only")
+        if self.settings.get('step_silkscreen', False) and step_silkscreen_supported(self.kicad_version):
+            # Flat faces on the board surface; mask goes with it, or the
+            # silkscreen would sit directly on bare laminate.
+            cmd += ["--include-silkscreen", "--include-soldermask"]
 
         cmd.append(pcb_file)
 

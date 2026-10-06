@@ -128,6 +128,11 @@ class BOMGenerator:
     # ------------------------------------------------------------------ inputs
 
     def enabled(self):
+        """The Settings switch. Which files to write is chosen in the BOM
+        window each run; projects from before the switch existed count as on
+        when either file was enabled."""
+        if 'generate_bom' in self.settings:
+            return bool(self.settings['generate_bom'])
         return bool(self.settings.get('generate_bom_dist') or self.settings.get('generate_bom_eng'))
 
     def project_name(self):

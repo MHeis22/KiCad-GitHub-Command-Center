@@ -1,320 +1,328 @@
 import os
 import wx
-from .model_exporter import render_supported
+import wx.lib.scrolledpanel
+from .model_exporter import render_supported, step_silkscreen_supported
 
 
-class Model3DSettingsDialog(wx.Dialog):
-    """Dedicated menu for 3D STEP export and PCB image render settings.
+class _WrapText(wx.StaticText):
+    """Grey help text that re-wraps to its current width, so long notes are
+    never clipped on narrow windows or with large system fonts."""
 
-    STEP export works on KiCad 7+. Image rendering requires KiCad 9.0+, so the
-    render controls are disabled (with an explanatory tooltip) on older versions.
-    """
+    def __init__(self, parent, text):
+        # NO_AUTORESIZE: otherwise every SetLabel snaps the control back to the
+        # unwrapped width, and the wrap undoes itself.
+        super().__init__(parent, label=text, style=wx.ST_NO_AUTORESIZE)
+        self._text = text
+        self._width = 0
+        self.SetForegroundColour(wx.SystemSettings.GetColour(wx.SYS_COLOUR_GRAYTEXT))
+        self.SetMinSize((50, -1))  # let the sizer decide the width, not the unwrapped text
+        self.Bind(wx.EVT_SIZE, self._on_size)
+
+    def _on_size(self, event):
+        event.Skip()
+        w = event.GetSize().width
+        if w > 20 and w != self._width:
+            self._width = w
+            self.SetLabel(self._text)
+            self.Wrap(w)
+            self.SetMinSize((50, self.GetBestSize().height))
+            wx.CallAfter(self._relayout)
+
+    def _relayout(self):
+        if self:
+            self.GetParent().Layout()
+
+
+def _note(parent, text):
+    return _WrapText(parent, text)
+
+
+def _choice(parent, labels, values, current):
+    ch = wx.Choice(parent, choices=labels)
+    ch.SetSelection(values.index(current) if current in values else 0)
+    return ch
+
+
+class SettingsDialog(wx.Dialog):
+    """All plugin settings, in tabs. Everything is stored with the project
+    (committed, so everyone who clones it generates the same files) except the
+    options marked 'this computer only'.
+
+    Image rendering needs KiCad 9.0+, so the render controls are disabled
+    (with an explanatory tooltip) on older versions."""
+
+    VIEW_LABELS = ["Top", "Bottom", "Top and bottom (two images)", "Left", "Right", "Front", "Back"]
+    VIEW_VALUES = ["top", "bottom", "both", "left", "right", "front", "back"]
 
     def __init__(self, parent, current_settings, kicad_version=""):
-        super().__init__(parent, title="3D Model & Render Settings", size=(500, 810))
+        super().__init__(parent, title="Settings", size=(560, 640),
+                         style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER)
         self.settings = current_settings.copy()
-        self.kicad_version = kicad_version
         self.render_ok = render_supported(kicad_version)
+        s = self.settings
 
         vbox = wx.BoxSizer(wx.VERTICAL)
+        nb = wx.Notebook(self)
+        nb.AddPage(self._general_page(nb, s), "General")
+        nb.AddPage(self._outputs_page(nb, s, kicad_version), "Outputs")
+        nb.AddPage(self._readme_page(nb, s), "README")
+        vbox.Add(nb, proportion=1, flag=wx.EXPAND | wx.ALL, border=10)
 
-        intro = wx.StaticText(self, label=(
-            "Generate a 3D STEP model and/or a rendered image of the PCB when you\n"
-            "commit. Files are written to /3d and /docs and included in the repo."
-        ))
-        intro.SetForegroundColour(wx.Colour(100, 100, 100))
-        vbox.Add(intro, flag=wx.ALL, border=15)
+        vbox.Add(_note(self, "Settings are saved with this project and shared through git, "
+                             "except those marked 'this computer only'."),
+                 flag=wx.EXPAND | wx.LEFT | wx.RIGHT, border=12)
 
-        # --- STEP Export ---
-        step_box = wx.StaticBox(self, label="3D STEP Model (Geometry)")
-        step_sizer = wx.StaticBoxSizer(step_box, wx.VERTICAL)
-
-        self.cb_step = wx.CheckBox(self, label="Export 3D STEP model to /3d on commit")
-        self.cb_step.SetValue(self.settings.get('export_step', False))
-        self.cb_step.SetToolTip("Runs 'kicad-cli pcb export step'. Works on KiCad 7+.")
-        self.cb_step.Bind(wx.EVT_CHECKBOX, self.on_toggle)
-        step_sizer.Add(self.cb_step, flag=wx.ALL, border=8)
-
-        self.cb_subst = wx.CheckBox(self, label="Substitute similar 3D models when exact ones are missing")
-        self.cb_subst.SetValue(self.settings.get('step_subst_models', True))
-        step_sizer.Add(self.cb_subst, flag=wx.LEFT | wx.RIGHT | wx.BOTTOM, border=8)
-
-        self.cb_nodnp = wx.CheckBox(self, label="Exclude Do-Not-Populate (DNP) components")
-        self.cb_nodnp.SetValue(self.settings.get('step_no_dnp', False))
-        step_sizer.Add(self.cb_nodnp, flag=wx.LEFT | wx.RIGHT | wx.BOTTOM, border=8)
-
-        self.cb_boardonly = wx.CheckBox(self, label="Board only (exclude all components)")
-        self.cb_boardonly.SetValue(self.settings.get('step_board_only', False))
-        step_sizer.Add(self.cb_boardonly, flag=wx.LEFT | wx.RIGHT | wx.BOTTOM, border=8)
-
-        vbox.Add(step_sizer, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=15)
-
-        # --- Image Render ---
-        img_label = "PCB Image Render (README)"
-        if not self.render_ok:
-            img_label += "  — Requires KiCad 9.0+"
-        render_box = wx.StaticBox(self, label=img_label)
-        render_sizer = wx.StaticBoxSizer(render_box, wx.VERTICAL)
-
-        self.cb_render = wx.CheckBox(self, label="Render PCB image to /docs and embed in README")
-        self.cb_render.SetValue(self.settings.get('render_image', False) and self.render_ok)
-        self.cb_render.Bind(wx.EVT_CHECKBOX, self.on_toggle)
-        render_sizer.Add(self.cb_render, flag=wx.ALL, border=8)
-
-        self.cb_both_sides = wx.CheckBox(self, label="Render both top and bottom (two images)")
-        self.cb_both_sides.SetValue(self.settings.get('render_both_sides', False))
-        self.cb_both_sides.SetToolTip("Renders top and bottom views and embeds both in the README. Overrides the single 'View side' choice.")
-        self.cb_both_sides.Bind(wx.EVT_CHECKBOX, self.on_toggle)
-        render_sizer.Add(self.cb_both_sides, flag=wx.LEFT | wx.RIGHT | wx.BOTTOM, border=8)
-
-        self.cb_dims = wx.CheckBox(self, label="Add a dimensioned drawing (auto W/H, corner R, hole Ø & offsets)")
-        self.cb_dims.SetValue(self.settings.get('render_dimensions', False))
-        self.cb_dims.SetToolTip(
-            "Produces a separate top-view technical drawing with automatic board width/height,\n"
-            "corner radius, and mounting-hole diameters & edge distances, and embeds it in the README.\n"
-            "Values are read straight from the board; adapts to irregular outlines and hole layouts.")
-        render_sizer.Add(self.cb_dims, flag=wx.LEFT | wx.RIGHT | wx.BOTTOM, border=8)
-
-        # Quality / side / background dropdowns
-        grid = wx.FlexGridSizer(cols=2, vgap=8, hgap=10)
-        grid.AddGrowableCol(1, 1)
-
-        self.quality_choices = ["basic", "high"]
-        current_quality = self.settings.get('render_quality', 'basic')
-        self.ch_quality = wx.Choice(self, choices=["Basic (fast)", "High (ray-traced, slow)"])
-        self.ch_quality.SetSelection(self.quality_choices.index(current_quality) if current_quality in self.quality_choices else 0)
-        grid.Add(wx.StaticText(self, label="Quality:"), flag=wx.ALIGN_CENTER_VERTICAL)
-        grid.Add(self.ch_quality, flag=wx.EXPAND)
-
-        self.side_choices = ["top", "bottom", "left", "right", "front", "back"]
-        current_side = self.settings.get('render_side', 'top')
-        self.ch_side = wx.Choice(self, choices=self.side_choices)
-        self.ch_side.SetSelection(self.side_choices.index(current_side) if current_side in self.side_choices else 0)
-        grid.Add(wx.StaticText(self, label="View side:"), flag=wx.ALIGN_CENTER_VERTICAL)
-        grid.Add(self.ch_side, flag=wx.EXPAND)
-
-        self.bg_choices = ["opaque", "transparent"]
-        current_bg = self.settings.get('render_background', 'opaque')
-        self.ch_bg = wx.Choice(self, choices=self.bg_choices)
-        self.ch_bg.SetSelection(self.bg_choices.index(current_bg) if current_bg in self.bg_choices else 0)
-        grid.Add(wx.StaticText(self, label="Background:"), flag=wx.ALIGN_CENTER_VERTICAL)
-        grid.Add(self.ch_bg, flag=wx.EXPAND)
-
-        self.sc_width = wx.SpinCtrl(self, min=256, max=8192, initial=int(self.settings.get('render_width', 1600)))
-        grid.Add(wx.StaticText(self, label="Render width (px):"), flag=wx.ALIGN_CENTER_VERTICAL)
-        grid.Add(self.sc_width, flag=wx.EXPAND)
-
-        self.sc_height = wx.SpinCtrl(self, min=256, max=8192, initial=int(self.settings.get('render_height', 1200)))
-        grid.Add(wx.StaticText(self, label="Render height (px):"), flag=wx.ALIGN_CENTER_VERTICAL)
-        grid.Add(self.sc_height, flag=wx.EXPAND)
-
-        self.sc_readme_w = wx.SpinCtrl(self, min=100, max=2000, initial=int(self.settings.get('readme_image_width', 500)))
-        grid.Add(wx.StaticText(self, label="README image width (px):"), flag=wx.ALIGN_CENTER_VERTICAL)
-        grid.Add(self.sc_readme_w, flag=wx.EXPAND)
-
-        render_sizer.Add(grid, flag=wx.EXPAND | wx.ALL, border=8)
-        vbox.Add(render_sizer, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=15)
-
-        # --- Schematic Image ---
-        sch_box = wx.StaticBox(self, label="Schematic Image (README)")
-        sch_sizer = wx.StaticBoxSizer(sch_box, wx.VERTICAL)
-
-        self.cb_schematic = wx.CheckBox(self, label="Export schematic to /docs (SVG) and embed in README")
-        self.cb_schematic.SetValue(self.settings.get('export_schematic', False))
-        self.cb_schematic.SetToolTip("Runs 'kicad-cli sch export svg'. Emits one SVG per sheet; embedded in the README hardware summary.")
-        self.cb_schematic.Bind(wx.EVT_CHECKBOX, self.on_toggle)
-        sch_sizer.Add(self.cb_schematic, flag=wx.ALL, border=8)
-
-        self.cb_sch_bw = wx.CheckBox(self, label="Black and white")
-        self.cb_sch_bw.SetValue(self.settings.get('schematic_bw', False))
-        sch_sizer.Add(self.cb_sch_bw, flag=wx.LEFT | wx.RIGHT | wx.BOTTOM, border=8)
-
-        self.cb_sch_nosheet = wx.CheckBox(self, label="Exclude drawing sheet (border & title block)")
-        self.cb_sch_nosheet.SetValue(self.settings.get('schematic_no_sheet', False))
-        sch_sizer.Add(self.cb_sch_nosheet, flag=wx.LEFT | wx.RIGHT | wx.BOTTOM, border=8)
-
-        sch_grid = wx.FlexGridSizer(cols=2, vgap=8, hgap=10)
-        sch_grid.AddGrowableCol(1, 1)
-        self.sc_sch_w = wx.SpinCtrl(self, min=100, max=2000, initial=int(self.settings.get('readme_schematic_width', 700)))
-        sch_grid.Add(wx.StaticText(self, label="README schematic width (px):"), flag=wx.ALIGN_CENTER_VERTICAL)
-        sch_grid.Add(self.sc_sch_w, flag=wx.EXPAND)
-        sch_sizer.Add(sch_grid, flag=wx.EXPAND | wx.ALL, border=8)
-
-        vbox.Add(sch_sizer, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=15)
-
-        # Buttons
         btn_sizer = wx.StdDialogButtonSizer()
-        btn_ok = wx.Button(self, wx.ID_OK)
-        btn_cancel = wx.Button(self, wx.ID_CANCEL)
-        btn_sizer.AddButton(btn_ok)
-        btn_sizer.AddButton(btn_cancel)
+        btn_sizer.AddButton(wx.Button(self, wx.ID_OK))
+        btn_sizer.AddButton(wx.Button(self, wx.ID_CANCEL))
         btn_sizer.Realize()
-        vbox.Add(btn_sizer, flag=wx.ALIGN_RIGHT | wx.BOTTOM | wx.RIGHT, border=10)
+        vbox.Add(btn_sizer, flag=wx.ALIGN_RIGHT | wx.ALL, border=10)
 
         self.SetSizer(vbox)
+        self.SetMinSize((520, 520))
         self.CenterOnParent()
         self._sync_enabled_state()
+
+    # ----- pages -------------------------------------------------------------
+
+    def _general_page(self, nb, s):
+        p = wx.Panel(nb)
+        v = wx.BoxSizer(wx.VERTICAL)
+
+        box = wx.StaticBoxSizer(wx.VERTICAL, p, "Commits (this computer only)")
+        sb = box.GetStaticBox()
+        self.cb_kicad_version = wx.CheckBox(sb, label="Append the KiCad version to commit messages")
+        self.cb_kicad_version.SetValue(s.get('include_kicad_version', True))
+        box.Add(self.cb_kicad_version, flag=wx.ALL, border=8)
+        self.cb_silent_pull = wx.CheckBox(sb, label="Pull changed text files before pushing (Silent Pull)")
+        self.cb_silent_pull.SetValue(s.get('silent_pull', False))
+        self.cb_silent_pull.SetToolTip("Automatically pulls remote changes to safe text files (README.md, .csv) before pushing.\n"
+                                       "Aborts if remote schematic or PCB changes are detected.")
+        box.Add(self.cb_silent_pull, flag=wx.LEFT | wx.RIGHT | wx.BOTTOM, border=8)
+        v.Add(box, flag=wx.EXPAND | wx.ALL, border=10)
+
+        p.SetSizer(v)
+        return p
+
+    def _outputs_page(self, nb, s, kicad_version):
+        p = wx.lib.scrolledpanel.ScrolledPanel(nb)
+        p.SetupScrolling(scroll_x=False)
+        v = wx.BoxSizer(wx.VERTICAL)
+
+        when = wx.BoxSizer(wx.HORIZONTAL)
+        when.Add(wx.StaticText(p, label="Generate outputs:"), flag=wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, border=8)
+        self.ch_when = _choice(p, ["On every commit", "Only with the 'Generate Project Files' button"],
+                               [False, True], bool(s.get('manual_file_generation', False)))
+        self.ch_when.SetToolTip("Applies to everything on this page, the README and the BOMs.")
+        when.Add(self.ch_when, proportion=1)
+        v.Add(when, flag=wx.EXPAND | wx.ALL, border=10)
+
+        # Gerbers
+        box = wx.StaticBoxSizer(wx.VERTICAL, p, "Fabrication")
+        sb = box.GetStaticBox()
+        self.cb_gerbers = wx.CheckBox(sb, label="Gerber and drill files (production/gerbers.zip)")
+        self.cb_gerbers.SetValue(s.get('generate_gerbers_zip', False))
+        self.cb_gerbers.SetToolTip("Uses the conventions JLCPCB asks for (Protel file extensions, one merged drill file),\n"
+                                   "which PCBWay, OSH Park, Aisler and most other fabs accept as well.")
+        box.Add(self.cb_gerbers, flag=wx.ALL, border=8)
+        box.Add(_note(sb, "Usually only needed when you are close to ordering boards."),
+                flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=8)
+
+        self.cb_bom = wx.CheckBox(sb, label="Bill of materials (production/)")
+        self.cb_bom.SetValue(s.get('generate_bom', bool(s.get('generate_bom_eng') or s.get('generate_bom_dist'))))
+        box.Add(self.cb_bom, flag=wx.LEFT | wx.RIGHT | wx.BOTTOM, border=8)
+        box.Add(_note(sb, "The BOM files, part-number field, parts and columns are chosen in "
+                          "the BOM window each time it runs."),
+                flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=8)
+        v.Add(box, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=10)
+
+        # STEP
+        box = wx.StaticBoxSizer(wx.VERTICAL, p, "3D STEP model")
+        sb = box.GetStaticBox()
+        self.cb_step = wx.CheckBox(sb, label="Export a STEP model to /3d")
+        self.cb_step.SetValue(s.get('export_step', False))
+        self.cb_step.Bind(wx.EVT_CHECKBOX, self.on_toggle)
+        box.Add(self.cb_step, flag=wx.ALL, border=8)
+        self.cb_subst = wx.CheckBox(sb, label="Substitute similar 3D models when exact ones are missing")
+        self.cb_subst.SetValue(s.get('step_subst_models', True))
+        self.cb_nodnp = wx.CheckBox(sb, label="Exclude Do-Not-Populate (DNP) components")
+        self.cb_nodnp.SetValue(s.get('step_no_dnp', False))
+        self.cb_boardonly = wx.CheckBox(sb, label="Board only (no components)")
+        self.cb_boardonly.SetValue(s.get('step_board_only', False))
+        self.silk_ok = step_silkscreen_supported(kicad_version)
+        self.cb_silk = wx.CheckBox(sb, label="Include silkscreen and solder mask"
+                                   + ("" if self.silk_ok else "  (requires KiCad 9.0+)"))
+        self.cb_silk.SetValue(s.get('step_silkscreen', False) and self.silk_ok)
+        self.cb_silk.SetToolTip("Adds the silkscreen, and the solder mask it sits on, as flat faces on the board surface.")
+        for cb in (self.cb_subst, self.cb_nodnp, self.cb_boardonly, self.cb_silk):
+            box.Add(cb, flag=wx.LEFT | wx.BOTTOM, border=28)
+        v.Add(box, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=10)
+
+        # Render
+        label = "PCB image" + ("" if self.render_ok else "  (requires KiCad 9.0+)")
+        box = wx.StaticBoxSizer(wx.VERTICAL, p, label)
+        sb = box.GetStaticBox()
+        self.cb_render = wx.CheckBox(sb, label="Render the board to /docs")
+        self.cb_render.SetValue(s.get('render_image', False) and self.render_ok)
+        self.cb_render.Bind(wx.EVT_CHECKBOX, self.on_toggle)
+        box.Add(self.cb_render, flag=wx.ALL, border=8)
+
+        grid = wx.FlexGridSizer(cols=2, vgap=6, hgap=10)
+        grid.AddGrowableCol(1, 1)
+        view = 'both' if s.get('render_both_sides', False) else s.get('render_side', 'top')
+        self.ch_view = _choice(sb, self.VIEW_LABELS, self.VIEW_VALUES, view)
+        self.ch_quality = _choice(sb, ["Basic (fast)", "High (ray-traced, slow)"], ["basic", "high"],
+                                  s.get('render_quality', 'basic'))
+        self.ch_bg = _choice(sb, ["Opaque", "Transparent"], ["opaque", "transparent"],
+                             s.get('render_background', 'opaque'))
+        for text, ctrl in (("View:", self.ch_view), ("Quality:", self.ch_quality), ("Background:", self.ch_bg)):
+            grid.Add(wx.StaticText(sb, label=text), flag=wx.ALIGN_CENTER_VERTICAL)
+            grid.Add(ctrl, flag=wx.EXPAND)
+        box.Add(grid, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=28)
+
+        self.cb_dims = wx.CheckBox(sb, label="Also make a dimensioned top-view drawing")
+        self.cb_dims.SetValue(s.get('render_dimensions', False))
+        self.cb_dims.SetToolTip("Board width/height, corner radius, mounting-hole diameters and edge distances,\n"
+                                "read straight from the board.")
+        box.Add(self.cb_dims, flag=wx.LEFT | wx.BOTTOM, border=28)
+
+        size = wx.BoxSizer(wx.HORIZONTAL)
+        size.Add(wx.StaticText(sb, label="Image size (px):"), flag=wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, border=8)
+        self.sc_width = wx.SpinCtrl(sb, min=256, max=8192, initial=int(s.get('render_width', 1600)), size=(80, -1))
+        self.sc_height = wx.SpinCtrl(sb, min=256, max=8192, initial=int(s.get('render_height', 1200)), size=(80, -1))
+        size.Add(self.sc_width)
+        size.Add(wx.StaticText(sb, label=" × "), flag=wx.ALIGN_CENTER_VERTICAL)
+        size.Add(self.sc_height)
+        box.Add(size, flag=wx.LEFT | wx.BOTTOM, border=28)
+        v.Add(box, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=10)
+
+        # Schematic
+        box = wx.StaticBoxSizer(wx.VERTICAL, p, "Schematic image")
+        sb = box.GetStaticBox()
+        self.cb_schematic = wx.CheckBox(sb, label="Export the schematic to /docs (one SVG per sheet)")
+        self.cb_schematic.SetValue(s.get('export_schematic', False))
+        self.cb_schematic.Bind(wx.EVT_CHECKBOX, self.on_toggle)
+        box.Add(self.cb_schematic, flag=wx.ALL, border=8)
+        self.cb_sch_bw = wx.CheckBox(sb, label="Black and white")
+        self.cb_sch_bw.SetValue(s.get('schematic_bw', False))
+        self.cb_sch_nosheet = wx.CheckBox(sb, label="Without the drawing sheet (border and title block)")
+        self.cb_sch_nosheet.SetValue(s.get('schematic_no_sheet', False))
+        for cb in (self.cb_sch_bw, self.cb_sch_nosheet):
+            box.Add(cb, flag=wx.LEFT | wx.BOTTOM, border=28)
+        v.Add(box, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=10)
+
+        p.SetSizer(v)
+        return p
+
+    def _readme_page(self, nb, s):
+        p = wx.Panel(nb)
+        v = wx.BoxSizer(wx.VERTICAL)
+
+        self.cb_readme = wx.CheckBox(p, label="Keep a hardware summary in README.md")
+        self.cb_readme.SetValue(s.get('auto_readme', False))
+        self.cb_readme.SetToolTip("Maintains a section in the README with board stats and the BOM.")
+        self.cb_readme.Bind(wx.EVT_CHECKBOX, self.on_toggle)
+        v.Add(self.cb_readme, flag=wx.ALL, border=12)
+
+        self.cb_readme_drc = wx.CheckBox(p, label="Include the DRC result (runs a design rules check)")
+        self.cb_readme_drc.SetValue(s.get('readme_drc', False))
+        v.Add(self.cb_readme_drc, flag=wx.LEFT | wx.BOTTOM, border=32)
+
+        box = wx.StaticBoxSizer(wx.VERTICAL, p, "Embedded images")
+        sb = box.GetStaticBox()
+        box.Add(_note(sb, "Board and schematic images from the Outputs tab are added "
+                          "to the README whenever they are generated."), flag=wx.EXPAND | wx.ALL, border=8)
+        grid = wx.FlexGridSizer(cols=2, vgap=6, hgap=10)
+        self.sc_readme_w = wx.SpinCtrl(sb, min=100, max=2000, initial=int(s.get('readme_image_width', 500)))
+        self.sc_sch_w = wx.SpinCtrl(sb, min=100, max=2000, initial=int(s.get('readme_schematic_width', 700)))
+        for text, ctrl in (("Board image width (px):", self.sc_readme_w),
+                           ("Schematic width (px):", self.sc_sch_w)):
+            grid.Add(wx.StaticText(sb, label=text), flag=wx.ALIGN_CENTER_VERTICAL)
+            grid.Add(ctrl)
+        box.Add(grid, flag=wx.ALL, border=8)
+        v.Add(box, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=12)
+
+        box = wx.StaticBoxSizer(wx.VERTICAL, p, "Part links in the BOM table")
+        sb = box.GetStaticBox()
+        grid = wx.FlexGridSizer(cols=2, vgap=6, hgap=10)
+        grid.AddGrowableCol(1, 1)
+        engines = ["Octopart", "ComponentSearchEngine"]
+        self.ch_engine = _choice(sb, engines, engines, s.get('search_engine', 'Octopart'))
+        currencies = ["USD", "EUR", "GBP", "CAD", "AUD", "JPY"]
+        self.ch_currency = _choice(sb, currencies, currencies, s.get('currency', 'USD'))
+        for text, ctrl in (("Search site:", self.ch_engine), ("Octopart currency:", self.ch_currency)):
+            grid.Add(wx.StaticText(sb, label=text), flag=wx.ALIGN_CENTER_VERTICAL)
+            grid.Add(ctrl, flag=wx.EXPAND)
+        box.Add(grid, flag=wx.EXPAND | wx.ALL, border=8)
+        v.Add(box, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=12)
+
+        p.SetSizer(v)
+        return p
+
+    # ----- state -------------------------------------------------------------
 
     def on_toggle(self, event):
         self._sync_enabled_state()
 
     def _sync_enabled_state(self):
-        """Grey out sub-options when their parent toggle is off, and lock the
-        render section entirely on KiCad < 9."""
+        """Grey out sub-options whose parent toggle is off."""
         step_on = self.cb_step.GetValue()
-        for cb in (self.cb_subst, self.cb_nodnp, self.cb_boardonly):
-            cb.Enable(step_on)
+        for c in (self.cb_subst, self.cb_nodnp, self.cb_boardonly):
+            c.Enable(step_on)
+        self.cb_silk.Enable(step_on and self.silk_ok)
 
-        # Render checkbox is disabled outright on unsupported KiCad versions.
         self.cb_render.Enable(self.render_ok)
         if not self.render_ok:
             self.cb_render.SetToolTip("Requires KiCad 9.0+. Your installed version does not provide 'kicad-cli pcb render'.")
-
         render_on = self.render_ok and self.cb_render.GetValue()
-        for ctrl in (self.cb_both_sides, self.cb_dims, self.ch_quality, self.ch_bg,
-                     self.sc_width, self.sc_height, self.sc_readme_w):
-            ctrl.Enable(render_on)
-        # The single-side choice is irrelevant when rendering both sides.
-        self.ch_side.Enable(render_on and not self.cb_both_sides.GetValue())
+        for c in (self.ch_view, self.ch_quality, self.ch_bg, self.cb_dims, self.sc_width, self.sc_height):
+            c.Enable(render_on)
 
-        # Schematic export sub-options follow their own toggle (no version gate:
-        # 'sch export svg' is available on all supported KiCad versions).
         sch_on = self.cb_schematic.GetValue()
-        for ctrl in (self.cb_sch_bw, self.cb_sch_nosheet, self.sc_sch_w):
-            ctrl.Enable(sch_on)
+        for c in (self.cb_sch_bw, self.cb_sch_nosheet):
+            c.Enable(sch_on)
+
+        self.cb_readme_drc.Enable(self.cb_readme.GetValue())
 
     def get_settings(self):
-        self.settings['export_step'] = self.cb_step.IsChecked()
-        self.settings['step_subst_models'] = self.cb_subst.IsChecked()
-        self.settings['step_no_dnp'] = self.cb_nodnp.IsChecked()
-        self.settings['step_board_only'] = self.cb_boardonly.IsChecked()
+        s = self.settings
+        s['include_kicad_version'] = self.cb_kicad_version.IsChecked()
+        s['silent_pull'] = self.cb_silent_pull.IsChecked()
 
-        # Never persist render_image as True on an unsupported version.
-        self.settings['render_image'] = self.cb_render.IsChecked() and self.render_ok
-        self.settings['render_both_sides'] = self.cb_both_sides.IsChecked()
-        self.settings['render_dimensions'] = self.cb_dims.IsChecked() and self.render_ok
-        self.settings['render_quality'] = self.quality_choices[self.ch_quality.GetSelection()]
-        self.settings['render_side'] = self.ch_side.GetStringSelection()
-        self.settings['render_background'] = self.ch_bg.GetStringSelection()
-        self.settings['render_width'] = self.sc_width.GetValue()
-        self.settings['render_height'] = self.sc_height.GetValue()
-        self.settings['readme_image_width'] = self.sc_readme_w.GetValue()
+        s['manual_file_generation'] = self.ch_when.GetSelection() == 1
+        s['generate_gerbers_zip'] = self.cb_gerbers.IsChecked()
 
-        self.settings['export_schematic'] = self.cb_schematic.IsChecked()
-        self.settings['schematic_bw'] = self.cb_sch_bw.IsChecked()
-        self.settings['schematic_no_sheet'] = self.cb_sch_nosheet.IsChecked()
-        self.settings['readme_schematic_width'] = self.sc_sch_w.GetValue()
-        return self.settings
+        s['export_step'] = self.cb_step.IsChecked()
+        s['step_subst_models'] = self.cb_subst.IsChecked()
+        s['step_no_dnp'] = self.cb_nodnp.IsChecked()
+        s['step_board_only'] = self.cb_boardonly.IsChecked()
+        s['step_silkscreen'] = self.cb_silk.IsChecked() and self.silk_ok
 
+        # Never persist render options as on for an unsupported KiCad version.
+        s['render_image'] = self.cb_render.IsChecked() and self.render_ok
+        s['render_dimensions'] = self.cb_dims.IsChecked() and self.render_ok
+        view = self.VIEW_VALUES[self.ch_view.GetSelection()]
+        s['render_both_sides'] = view == 'both'
+        s['render_side'] = 'top' if view == 'both' else view
+        s['render_quality'] = ["basic", "high"][self.ch_quality.GetSelection()]
+        s['render_background'] = ["opaque", "transparent"][self.ch_bg.GetSelection()]
+        s['render_width'] = self.sc_width.GetValue()
+        s['render_height'] = self.sc_height.GetValue()
 
-class SettingsDialog(wx.Dialog):
-    def __init__(self, parent, current_settings):
-        # Slightly reduced window height as we moved the gerbers toggle
-        super().__init__(parent, title="Settings", size=(470, 540))
-        self.settings = current_settings.copy()
-        
-        vbox = wx.BoxSizer(wx.VERTICAL)
-        
-        # KiCad Version toggle
-        self.cb_kicad_version = wx.CheckBox(self, label="Automatically append KiCad Version to commit messages")
-        self.cb_kicad_version.SetValue(self.settings.get('include_kicad_version', True))
-        vbox.Add(self.cb_kicad_version, flag=wx.LEFT | wx.RIGHT | wx.BOTTOM | wx.TOP, border=15)
-        
-        # Auto-Readme toggle
-        self.cb_readme = wx.CheckBox(self, label="Automatically update README.md with hardware summary")
-        self.cb_readme.SetValue(self.settings.get('auto_readme', False))
-        self.cb_readme.SetToolTip("Generates a sticky footer in your README with BOM and board stats.")
-        vbox.Add(self.cb_readme, flag=wx.LEFT | wx.RIGHT | wx.BOTTOM, border=15)
+        s['export_schematic'] = self.cb_schematic.IsChecked()
+        s['schematic_bw'] = self.cb_sch_bw.IsChecked()
+        s['schematic_no_sheet'] = self.cb_sch_nosheet.IsChecked()
 
-        # DRC Check in Readme
-        self.cb_readme_drc = wx.CheckBox(self, label="Include DRC (Design Rules Check) status in README")
-        self.cb_readme_drc.SetValue(self.settings.get('readme_drc', False))
-        self.cb_readme_drc.SetToolTip("Runs a background DRC check on the PCB during commit to display error/warning counts.")
-        vbox.Add(self.cb_readme_drc, flag=wx.LEFT | wx.RIGHT | wx.BOTTOM, border=15)
+        s['auto_readme'] = self.cb_readme.IsChecked()
+        s['readme_drc'] = self.cb_readme_drc.IsChecked()
+        s['readme_image_width'] = self.sc_readme_w.GetValue()
+        s['readme_schematic_width'] = self.sc_sch_w.GetValue()
 
-        # Silent Pull toggle
-        self.cb_silent_pull = wx.CheckBox(self, label="Auto-Pull text files before pushing (Silent Pull)")
-        self.cb_silent_pull.SetValue(self.settings.get('silent_pull', False))
-        self.cb_silent_pull.SetToolTip("Automatically pulls remote changes to safe text files (README.md, .csv) before pushing.\nAborts pulling if remote KiCad schematic or PCB changes are detected.")
-        vbox.Add(self.cb_silent_pull, flag=wx.LEFT | wx.RIGHT | wx.BOTTOM, border=15)
+        s['generate_bom'] = self.cb_bom.IsChecked()
+        s['search_engine'] = self.ch_engine.GetStringSelection()
+        s['currency'] = self.ch_currency.GetStringSelection()
+        return s
 
-        # Manual file generation toggle. When on, the extra-file generators do
-        # NOT run on commit; a "Generate Project Files" button appears in the
-        # main window to run them on demand instead.
-        self.cb_manual_gen = wx.CheckBox(self, label="Generate extra files manually via a button (not on every commit)")
-        self.cb_manual_gen.SetValue(self.settings.get('manual_file_generation', False))
-        self.cb_manual_gen.SetToolTip("Covers BOMs, Gerbers, 3D model, PCB renders, schematic image and README.\nWhen enabled, these are produced only when you click 'Generate Project Files'.")
-        vbox.Add(self.cb_manual_gen, flag=wx.LEFT | wx.RIGHT | wx.BOTTOM, border=15)
-
-        # --- BOM Generation ---
-        bom_box = wx.StaticBox(self, label="BOM Generation (Auto-run on Commit)")
-        bom_sizer = wx.StaticBoxSizer(bom_box, wx.VERTICAL)
-        
-        self.cb_bom_dist = wx.CheckBox(self, label="Generate Distributor BOM (Qty, Ref, MPN)")
-        self.cb_bom_dist.SetValue(self.settings.get('generate_bom_dist', False))
-        self.cb_bom_dist.SetToolTip("Compact CSV containing only what automated distributor tools need.")
-        bom_sizer.Add(self.cb_bom_dist, flag=wx.LEFT | wx.RIGHT | wx.TOP, border=10)
-        
-        self.cb_bom_eng = wx.CheckBox(self, label="Generate Engineering BOM (Includes Value, Footprint and DNP components)")
-        self.cb_bom_eng.SetValue(self.settings.get('generate_bom_eng', False))
-        self.cb_bom_eng.SetToolTip("A more detailed CSV easier for human review.")
-        bom_sizer.Add(self.cb_bom_eng, flag=wx.LEFT | wx.RIGHT | wx.TOP | wx.BOTTOM, border=10)
-        
-        mpn_sizer = wx.BoxSizer(wx.HORIZONTAL)
-        mpn_sizer.Add(wx.StaticText(self, label="Custom MPN Field Name:"), flag=wx.ALIGN_CENTER_VERTICAL|wx.RIGHT, border=5)
-        self.tc_mpn = wx.TextCtrl(self, value=self.settings.get('mpn_field_name', 'Manufacturer_Part_Number'))
-        self.tc_mpn.SetToolTip("The exact property name used in your KiCad symbols for the part number (e.g., LCSC, MPN, Part Number).") 
-        mpn_sizer.Add(self.tc_mpn, proportion=1)
-        bom_sizer.Add(mpn_sizer, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=10)
-        
-        vbox.Add(bom_sizer, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=15)
-
-        # --- Search Engine & Currency Selections ---
-        engine_choices = ["Octopart", "ComponentSearchEngine"]
-        current_engine = self.settings.get('search_engine', 'Octopart')
-        
-        vbox.Add(wx.StaticText(self, label="BOM Component Search Engine:"), flag=wx.LEFT | wx.TOP, border=15)
-        self.cb_engine = wx.Choice(self, choices=engine_choices)
-        self.cb_engine.SetSelection(engine_choices.index(current_engine) if current_engine in engine_choices else 0)
-        vbox.Add(self.cb_engine, flag=wx.LEFT | wx.RIGHT | wx.BOTTOM, border=15)
-        
-        currency_choices = ["USD", "EUR", "GBP", "CAD", "AUD", "JPY"]
-        current_currency = self.settings.get('currency', 'USD')
-        
-        vbox.Add(wx.StaticText(self, label="Octopart Currency:"), flag=wx.LEFT | wx.TOP, border=15)
-        self.cb_currency = wx.Choice(self, choices=currency_choices)
-        self.cb_currency.SetSelection(currency_choices.index(current_currency) if current_currency in currency_choices else 0)
-        vbox.Add(self.cb_currency, flag=wx.LEFT | wx.RIGHT | wx.BOTTOM, border=15)
-        
-        # ------------------------------------------------
-        
-        btn_sizer = wx.StdDialogButtonSizer()
-        btn_ok = wx.Button(self, wx.ID_OK)
-        btn_cancel = wx.Button(self, wx.ID_CANCEL)
-        btn_sizer.AddButton(btn_ok)
-        btn_sizer.AddButton(btn_cancel)
-        btn_sizer.Realize()
-        
-        vbox.Add(btn_sizer, flag=wx.ALIGN_RIGHT|wx.BOTTOM|wx.RIGHT, border=10)
-        self.SetSizer(vbox)
-        self.CenterOnParent()
-        
-    def get_settings(self):
-        self.settings['include_kicad_version'] = self.cb_kicad_version.IsChecked()
-        self.settings['auto_readme'] = self.cb_readme.IsChecked()
-        self.settings['readme_drc'] = self.cb_readme_drc.IsChecked()
-        self.settings['silent_pull'] = self.cb_silent_pull.IsChecked()
-        self.settings['manual_file_generation'] = self.cb_manual_gen.IsChecked()
-
-        self.settings['generate_bom_dist'] = self.cb_bom_dist.IsChecked()
-        self.settings['generate_bom_eng'] = self.cb_bom_eng.IsChecked()
-        self.settings['mpn_field_name'] = self.tc_mpn.GetValue().strip() or "MPN"
-        
-        # Capture the new dropdown settings
-        self.settings['search_engine'] = self.cb_engine.GetStringSelection()
-        self.settings['currency'] = self.cb_currency.GetStringSelection()
-        
-        return self.settings
 
 class CommitDialog(wx.Dialog):
     # Maps a git status code to (badge text, colour). git diff --name-status
@@ -514,8 +522,8 @@ class BundlePreviewDialog(wx.Dialog):
         vbox.Add(self.cb_stock, flag=wx.ALL, border=15)
 
         note = wx.StaticText(self, label=(
-            "The Schematic Editor must be closed. Afterwards, save the board (Ctrl+S) and\n"
-            "reopen the project so KiCad picks up the new project library tables."
+            "The Schematic Editor must be closed. The board is saved automatically;\n"
+            "afterwards, reopen the project so KiCad loads the new library tables."
         ))
         note.SetForegroundColour(wx.Colour(170, 90, 0))
         vbox.Add(note, flag=wx.LEFT | wx.RIGHT | wx.BOTTOM, border=15)
