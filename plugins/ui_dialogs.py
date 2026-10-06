@@ -546,7 +546,8 @@ class BundlePreviewDialog(wx.Dialog):
         for (lib, name), i in sorted(p.symbols.items()):
             rows.append(("Symbol", f"{lib}:{name}", f"{p.nickname}:{i['new_name']}"))
         for (lib, name), i in sorted(p.footprints.items()):
-            rows.append(("Footprint", f"{lib}:{name}", f"{p.nickname}:{i['new_name']}  ({i['origin']})"))
+            origin = "already in project library" if i.get('exists') else i['origin']
+            rows.append(("Footprint", f"{lib}:{name}", f"{p.nickname}:{i['new_name']}  ({origin})"))
         for raw, i in sorted(p.models.items()):
             rows.append(("3D model", os.path.basename(i['src']), f"libs/3dmodels/{i['dest_name']}"))
         for old, new in sorted(p.field_remaps.items()):
@@ -580,3 +581,74 @@ class BundlePreviewDialog(wx.Dialog):
 
     def include_stock(self):
         return self.cb_stock.GetValue()
+
+
+def wait_until_done(parent, title, message, still_waiting, extra_button=None, interval_ms=500):
+    """Shows `message` without blocking the rest of KiCad and returns once
+    still_waiting() turns False (True), or when the user cancels (False).
+
+    A modal dialog would disable every KiCad window, so the user couldn't do
+    the very thing being waited for (e.g. close the Schematic Editor). This
+    runs its own event loop instead, like ShowModal() but without disabling
+    other windows. `parent` is disabled meanwhile so it can't be re-entered.
+
+    extra_button: optional (label, callback). The callback returns True to
+    finish, False to cancel, or None to keep waiting."""
+    if not still_waiting():
+        return True
+    dlg = wx.Dialog(parent, title=title, style=wx.CAPTION | wx.CLOSE_BOX | wx.STAY_ON_TOP)
+    v = wx.BoxSizer(wx.VERTICAL)
+    v.Add(wx.StaticText(dlg, label=message), flag=wx.ALL, border=15)
+    row = wx.BoxSizer(wx.HORIZONTAL)
+    row.AddStretchSpacer()
+    btn_extra = None
+    if extra_button:
+        btn_extra = wx.Button(dlg, label=extra_button[0])
+        row.Add(btn_extra, flag=wx.RIGHT, border=8)
+    btn_cancel = wx.Button(dlg, wx.ID_CANCEL, "Cancel")
+    row.Add(btn_cancel)
+    v.Add(row, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=15)
+    dlg.SetSizerAndFit(v)
+    dlg.CenterOnParent()
+
+    loop = wx.GUIEventLoop()
+    result = {}
+
+    def finish(value):
+        if 'value' not in result:
+            result['value'] = value
+            if loop.IsRunning():
+                loop.Exit()
+
+    def on_timer(event):
+        if not still_waiting():
+            finish(True)
+
+    def on_extra(event):
+        outcome = extra_button[1]()
+        if outcome is not None:
+            finish(outcome)
+        elif not still_waiting():
+            finish(True)
+
+    timer = wx.Timer(dlg)
+    dlg.Bind(wx.EVT_TIMER, on_timer, timer)
+    btn_cancel.Bind(wx.EVT_BUTTON, lambda e: finish(False))
+    dlg.Bind(wx.EVT_CLOSE, lambda e: finish(False))
+    if btn_extra:
+        btn_extra.Bind(wx.EVT_BUTTON, on_extra)
+
+    if parent:
+        parent.Disable()
+    try:
+        dlg.Show()
+        timer.Start(interval_ms)
+        if 'value' not in result:
+            loop.Run()
+    finally:
+        timer.Stop()
+        dlg.Destroy()
+        if parent:
+            parent.Enable()
+            parent.Raise()
+    return result.get('value', False)

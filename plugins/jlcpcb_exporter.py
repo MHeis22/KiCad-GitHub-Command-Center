@@ -1,7 +1,70 @@
 import pcbnew
 import os
+import re
 import shutil
+import subprocess
 import tempfile
+from .utils import CREATE_NO_WINDOW, find_kicad_cli
+
+# Layers in the gerber set, as kicad-cli names them (plus In1.Cu ... In30.Cu).
+_GERBER_LAYERS = ['F.Cu', 'B.Cu', 'F.Silkscreen', 'B.Silkscreen', 'F.Mask', 'B.Mask',
+                  'F.Paste', 'B.Paste', 'Edge.Cuts'] + [f'In{i}.Cu' for i in range(1, 31)]
+
+
+def _board_layers(pcb_file):
+    """Names of the layers enabled in a .kicad_pcb file, in the form kicad-cli
+    takes. The file uses the short names for some (F.SilkS)."""
+    with open(pcb_file, encoding='utf-8', errors='replace') as f:
+        text = f.read(200000)
+    start = text.find('(layers')
+    if start == -1:
+        return set()
+    names = set(re.findall(r'\(\d+\s+"([^"]+)"', text[start:text.find('\n\t)', start)]))
+    aliases = {'F.SilkS': 'F.Silkscreen', 'B.SilkS': 'B.Silkscreen'}
+    return {aliases.get(n, n) for n in names}
+
+
+def generate_gerber_zip(pcb_file, output_directory, zip_filename="gerbers"):
+    """Gerbers + drill file for a board file on disk, zipped into
+    <output_directory>/production/<zip_filename>.zip.
+
+    Uses kicad-cli on the saved file rather than the board open in the
+    editor, so the zip always matches what is committed (unsaved edits, or a
+    board just replaced by a merge, can't leak in). Settings match
+    JLCPCBExporter: Protel extensions, silkscreen clipped by mask, absolute
+    origin, zones refilled; one merged Excellon file in mm, routed ovals."""
+    production_dir = os.path.join(output_directory, "production")
+    os.makedirs(production_dir, exist_ok=True)
+    layers = [l for l in _GERBER_LAYERS if l in _board_layers(pcb_file)]
+    if not layers:
+        raise RuntimeError("The board has none of the layers needed for gerbers.")
+    cli = find_kicad_cli()
+    temp_dir = tempfile.mkdtemp()
+    try:
+        for args in (["pcb", "export", "gerbers", "--output", temp_dir, "--layers", ",".join(layers),
+                      "--subtract-soldermask", "--check-zones", pcb_file],
+                     ["pcb", "export", "drill", "--output", temp_dir, "--format", "excellon",
+                      "--drill-origin", "absolute", "--excellon-zeros-format", "decimal",
+                      "--excellon-oval-format", "route", "--excellon-units", "mm", pcb_file]):
+            res = subprocess.run([cli] + args, capture_output=True, text=True, errors="replace",
+                                 timeout=300, creationflags=CREATE_NO_WINDOW)
+            if res.returncode != 0:
+                raise RuntimeError(f"kicad-cli {args[2]} failed: " + (res.stderr or res.stdout).strip())
+        for f in os.listdir(temp_dir):
+            if f.endswith('.gbrjob'):  # the old exporter didn't write a job file either
+                os.remove(os.path.join(temp_dir, f))
+        if not os.listdir(temp_dir):
+            raise RuntimeError("Gerber export produced no output files. Check that the board has copper "
+                               "layers and a valid Edge.Cuts outline.")
+        zip_base_path = os.path.join(production_dir, zip_filename)
+        shutil.make_archive(zip_base_path, 'zip', temp_dir)
+        final_zip = f"{zip_base_path}.zip"
+        if not os.path.exists(final_zip) or os.path.getsize(final_zip) == 0:
+            raise RuntimeError(f"Gerber archive was not created or is empty: {final_zip}")
+        return final_zip
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
 
 class JLCPCBExporter:
     def __init__(self, board):

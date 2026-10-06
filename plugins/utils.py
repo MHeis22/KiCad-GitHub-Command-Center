@@ -23,6 +23,24 @@ def git_network_kwargs():
 # Prefix of the git-reference copies DiffEngine writes next to the real files.
 TMP_OLD_PREFIX = "tmp_git_old_"
 
+def sweep_temp_files(project_dir):
+    """Removes leftovers of DiffEngine's reference copies anywhere in the
+    project: the copies themselves, their .kicad_prl/-backups, and the
+    '~tmp_git_old_*.lck' lock files kicad-cli leaves next to them. The prefix
+    is only ever used by this plugin, so nothing of the user's is touched."""
+    for root, dirs, files in os.walk(project_dir):
+        dirs[:] = [d for d in dirs if d != '.git']
+        for d in list(dirs):
+            if d.startswith(TMP_OLD_PREFIX) and d.endswith('-backups'):
+                shutil.rmtree(os.path.join(root, d), ignore_errors=True)
+                dirs.remove(d)
+        for f in files:
+            if f.startswith(TMP_OLD_PREFIX) or f.startswith('~' + TMP_OLD_PREFIX):
+                try:
+                    os.remove(os.path.join(root, f))
+                except OSError:
+                    pass  # still open somewhere; the next sweep gets it
+
 def project_files(project_dir, ext):
     """Sorted '*<ext>' files in project_dir, ignoring DiffEngine's temporary
     reference copies (which can be left behind if KiCad quits mid-diff and
@@ -95,21 +113,44 @@ def load_settings():
 def load_project_settings(project_dir):
     """Loads per-project settings, falling back to an empty dict if none exist."""
     try:
-        with open(get_project_settings_path(project_dir), 'r') as f:
+        with open(get_project_settings_path(project_dir), 'r', encoding='utf-8') as f:
             return json.load(f)
     except Exception:
         return {}
 
+def project_settings_problem(project_dir):
+    """A message when the project settings file exists but can't be read,
+    typically after a git merge left conflict markers in it; else None."""
+    path = get_project_settings_path(project_dir)
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            text = f.read()
+    except OSError:
+        return None
+    try:
+        json.loads(text)
+        return None
+    except ValueError:
+        what = "has unresolved git merge conflicts" if "<<<<<<<" in text else "is not valid JSON"
+        return (f"{os.path.basename(path)} {what}, so this project's settings can't be read. "
+                f"Defaults are used until it is fixed; saving settings keeps a copy of it as "
+                f"{os.path.basename(path)}.bak.")
+
 def save_project_settings(project_dir, settings):
     """Saves per-project settings. The file is committed with the project, so
-    it is written stably (sorted, indented) and only when it actually changes."""
+    it is written stably (sorted, indented) and only when it actually changes.
+    An unreadable file (e.g. merge conflict) is kept as .bak, never lost."""
     path = get_project_settings_path(project_dir)
     text = json.dumps(settings, indent=2, sort_keys=True) + "\n"
     try:
         try:
-            with open(path, 'r') as f:
-                if f.read() == text:
-                    return
+            with open(path, 'r', encoding='utf-8') as f:
+                current = f.read()
+            if current == text:
+                return
+            if project_settings_problem(project_dir):
+                with open(path + '.bak', 'w', encoding='utf-8', newline='') as f:
+                    f.write(current)
         except OSError:
             pass
         with open(path, 'w', newline='\n') as f:

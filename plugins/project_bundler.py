@@ -21,6 +21,9 @@ LIBS_SUBDIR = "libs"
 MODELS_SUBDIR = "3dmodels"
 BACKUP_DIR = ".bundle_backup"
 BUNDLE_DESCR = "Bundled by GitHub Command Center"
+# libs/bundle_sources.json: where each bundled part came from ("lib:name"), so
+# a part is only ever matched with a bundled copy of the very same part.
+SOURCES_FILE = "bundle_sources.json"
 
 # ${KICAD9_SYMBOL_DIR}, ${KICAD10_3DMODEL_DIR}, ... — KiCad's stock library variables,
 # plus the KiCad 5 names (KISYSMOD, KISYS3DMOD) still found in long-lived tables.
@@ -128,6 +131,42 @@ def _norm_ws(s):
     return re.sub(r'\s+', ' ', s).strip()
 
 
+def _cut_blocks(text, head_re):
+    """Removes every s-expression whose opening matches head_re."""
+    out, pos = [], 0
+    for m in re.finditer(head_re, text):
+        if m.start() < pos:
+            continue
+        out.append(text[pos:m.start()])
+        pos = _sexpr_end(text, m.start())
+    out.append(text[pos:])
+    return ''.join(out)
+
+
+def _sym_sig(block, name):
+    """Content of a symbol, ignoring its name, layout whitespace and its
+    Footprint field (rewritten when footprints are bundled)."""
+    base = name.split(':', 1)[-1]
+    block = _rename_symbol_block(block, "X", base, "X")
+    block = re.sub(r'(\(property\s+"Footprint"\s+)"(?:[^"\\]|\\.)*"', r'\1""', block)
+    return hashlib.sha1(_norm_ws(block).encode('utf-8')).hexdigest()
+
+
+# Parts of a footprint file that differ between copies of the same footprint:
+# ids, file-format stamps, per-placement data, and 3D model paths (rewritten
+# when models are bundled).
+_FP_VOLATILE = r'\((?:uuid|tstamp|version|generator|generator_version|sheetname|sheetfile|path|model)[\s)]'
+
+
+def _fp_sig(text):
+    """Content of a footprint, ignoring its name and anything in _FP_VOLATILE."""
+    text = _cut_blocks(text, _FP_VOLATILE)
+    text = re.sub(r'^\s*\((footprint|module)\s+("(?:[^"\\]|\\.)*"|\S+)', '(footprint', text, count=1)
+    text = re.sub(r'(\(property\s+"Reference"\s+)"(?:[^"\\]|\\.)*"', r'\1""', text)
+    text = re.sub(r'\(fp_text\s+reference\s+("(?:[^"\\]|\\.)*"|\S+)', '(fp_text reference ""', text)
+    return hashlib.sha1(_norm_ws(text).encode('utf-8')).hexdigest()
+
+
 def _file_hash(path):
     h = hashlib.sha1()
     with open(path, 'rb') as f:
@@ -212,17 +251,36 @@ class ProjectBundler:
             self.pcb_file = os.path.join(self.project_dir, pcbs[0]) if pcbs else None
         base = os.path.splitext(os.path.basename(self.pcb_file or self.project_dir))[0]
         self.project_name = base
-        self.nickname = _safe_part(base)
-
-        self.libs_dir = os.path.join(self.project_dir, LIBS_SUBDIR)
-        self.sym_lib_path = os.path.join(self.libs_dir, f"{self.nickname}.kicad_sym")
-        self.fp_lib_path = os.path.join(self.libs_dir, f"{self.nickname}.pretty")
-        self.models_dir = os.path.join(self.libs_dir, MODELS_SUBDIR)
 
         self.env = self._build_env()
         self.sym_table = self._load_tables('sym-lib-table')
         self.fp_table = self._load_tables('fp-lib-table')
         self.stock_dirs = self._stock_dirs()
+        self.nickname = self._free_nickname(_safe_part(base))
+
+        self.libs_dir = os.path.join(self.project_dir, LIBS_SUBDIR)
+        self.sym_lib_path = os.path.join(self.libs_dir, f"{self.nickname}.kicad_sym")
+        self.fp_lib_path = os.path.join(self.libs_dir, f"{self.nickname}.pretty")
+        self.models_dir = os.path.join(self.libs_dir, MODELS_SUBDIR)
+        self.sources_path = os.path.join(self.libs_dir, SOURCES_FILE)
+        self.outside_sheets = []
+
+    def _free_nickname(self, nick):
+        """The project library's nickname. A project table entry may already
+        own it; a library of that name elsewhere (stock 'LED', a personal
+        library) would be shadowed by it, so another name is used then."""
+        tables = (self.sym_table, self.fp_table)
+        if any(nick in t and self._classify(t[nick]) == 'project' for t in tables):
+            return nick  # bundled before under this name: keep it
+
+        def clashes(n):
+            return any(n in t for t in tables)
+        if not clashes(nick):
+            return nick
+        for cand in [f"{nick}_project"] + [f"{nick}_project{k}" for k in range(2, 50)]:
+            if not clashes(cand):
+                return cand
+        return nick
 
     # ----- environment & library tables ------------------------------------
 
@@ -374,12 +432,18 @@ class ProjectBundler:
             return sorted(os.path.join(self.project_dir, f) for f in os.listdir(self.project_dir)
                           if f.endswith('.kicad_sch'))
         seen, stack = [], [os.path.normpath(root)]
+        self.outside_sheets = []
         while stack:
             path = stack.pop()
-            if path in seen or not os.path.exists(path):
+            if path in seen or path in self.outside_sheets or not os.path.exists(path):
+                continue
+            if not self._under(path, self.project_dir):
+                # Shared with other projects: relinking it would break them.
+                self.outside_sheets.append(path)
                 continue
             seen.append(path)
-            for m in re.finditer(r'\(property\s+"Sheetfile"\s+"((?:[^"\\]|\\.)*)"', _read(path)):
+            # "Sheetfile" since KiCad 7, "Sheet file" in KiCad 6.
+            for m in re.finditer(r'\(property\s+"Sheet ?file"\s+"((?:[^"\\]|\\.)*)"', _read(path), re.I):
                 stack.append(os.path.normpath(os.path.join(os.path.dirname(path), _unq(m.group(1)))))
         return seen
 
@@ -408,11 +472,15 @@ class ProjectBundler:
                 lid = _unq(m.group(1))
                 if ':' in lid and lid not in lib_ids:
                     lib_ids.append(lid)
-            for m in re.finditer(r'\(property\s+"Footprint"\s+"((?:[^"\\]|\\.)*)"', text):
-                v = _unq(m.group(1))
+            # Footprint fields, plus KiCad 6 (symbol_instances ... (footprint "x")).
+            for m in re.finditer(r'\(property\s+"Footprint"\s+"((?:[^"\\]|\\.)*)"|\(footprint\s+"((?:[^"\\]|\\.)*)"\)', text):
+                v = _unq(m.group(1) if m.group(1) is not None else m.group(2))
                 if ':' in v:
                     fp_fields.add(v)
 
+        for p in self.outside_sheets:
+            plan.warnings.append(f"Sheet '{p}' is outside the project folder and is left unchanged; "
+                                 f"its parts are not bundled.")
         self._scan_symbols(plan, lib_ids, cache)
         board_fps = self._scan_footprints(plan, fp_fields)
         self._scan_models(plan, board_fps)
@@ -420,9 +488,9 @@ class ProjectBundler:
 
     def _wants(self, lib, table, plan, kind):
         """True if items from this library nickname should be bundled."""
-        if lib == self.nickname:
-            return False  # already bundled
         raw = table.get(lib)
+        if lib == self.nickname and (raw is None or self._classify(raw) == 'project'):
+            return False  # already bundled
         if raw is None or (self._classify(raw) == 'custom' and not os.path.exists(self._expand(raw) or '')):
             # Missing, or listed with a path that doesn't exist on this machine
             # (e.g. a table carried over from another computer).
@@ -440,8 +508,51 @@ class ProjectBundler:
             return 'stock'
         return True
 
+    def _pick_name(self, name, lib, sig, taken, kind, plan, fold_case):
+        """Name for `lib:name` in the project library. `taken` maps names already
+        in the project library or this plan to their content signature. The
+        same content reuses its name; different content never overwrites or
+        borrows an existing entry, it gets a new name instead.
+        Returns (new_name, already_there)."""
+        base = f"{name}_{_safe_part(lib)}"
+        candidates = [name, base] + [f"{base}_{k}" for k in range(2, 100)]
+        for cand in candidates:
+            key = cand.lower() if fold_case else cand
+            if key not in taken:
+                taken[key] = (sig, cand)
+                if cand != name:
+                    plan.warnings.append(f"{kind} '{name}' already exists in the project library with different "
+                                         f"content; '{lib}:{name}' becomes '{self.nickname}:{cand}'.")
+                return cand, False
+            if taken[key][0] == sig:
+                # The existing entry's own spelling: 'sot-23' must link to the
+                # file actually on disk, 'SOT-23.kicad_mod', on case-sensitive systems.
+                return taken[key][1], True
+        raise RuntimeError(f"Could not find a free name for {kind.lower()} '{lib}:{name}'.")
+
+    def _existing_symbols(self):
+        """name -> signature for symbols already in the project symbol library."""
+        if not os.path.isfile(self.sym_lib_path):
+            return {}
+        text = _read(self.sym_lib_path)
+        return {n: (_sym_sig(text[s:e], n), n) for n, s, e in _top_level_symbols(text, 1)}
+
+    def _existing_footprints(self):
+        """lower-case name -> signature for footprints already in the project library."""
+        if not os.path.isdir(self.fp_lib_path):
+            return {}
+        out = {}
+        for f in os.listdir(self.fp_lib_path):
+            if f.endswith('.kicad_mod'):
+                try:
+                    stem = f[:-len('.kicad_mod')]
+                    out[stem.lower()] = (_fp_sig(_read(os.path.join(self.fp_lib_path, f))), stem)
+                except OSError:
+                    pass
+        return out
+
     def _scan_symbols(self, plan, lib_ids, cache):
-        used_names = {}  # new_name -> normalized block
+        taken = self._existing_symbols()
         decided = {}
         for lid in lib_ids:
             lib, name = lid.split(':', 1)
@@ -461,13 +572,7 @@ class ProjectBundler:
                 plan.warnings.append(f"Symbol '{lid}' not found in the schematic cache or its library; skipped.")
                 continue
 
-            new_name = name
-            norm = _norm_ws(_rename_symbol_block(block, name, name, name))
-            if new_name in used_names and used_names[new_name] != norm:
-                new_name = f"{name}_{_safe_part(lib)}"
-                plan.warnings.append(f"Symbol name '{name}' is used by several libraries; "
-                                     f"'{lid}' becomes '{self.nickname}:{new_name}'.")
-            used_names.setdefault(new_name, norm)
+            new_name, _ = self._pick_name(name, lib, _sym_sig(block, lid), taken, "Symbol", plan, fold_case=False)
             plan.symbols[(lib, name)] = {'new_name': new_name, 'block': block, 'origin': origin}
 
     def _symbol_from_library(self, lib, name):
@@ -497,7 +602,7 @@ class ProjectBundler:
         keys = list(refs.keys()) + [tuple(v.split(':', 1)) for v in sorted(fp_fields)]
 
         decided = {}
-        used_names = {}
+        taken = self._existing_footprints()
         for lib, name in keys:
             if (lib, name) in plan.footprints or not lib:
                 continue
@@ -515,23 +620,29 @@ class ProjectBundler:
             if lib_dir and os.path.isfile(os.path.join(lib_dir, name + '.kicad_mod')):
                 src = os.path.join(lib_dir, name + '.kicad_mod')
             if src is None and (lib, name) not in refs:
-                bundled = self._bundled_footprint_name(plan, name)
+                bundled = self._bundled_footprint_name(lib, name)
                 if bundled:
                     plan.field_remaps[f"{lib}:{name}"] = f"{self.nickname}:{bundled}"
+                elif name.lower() in taken:
+                    plan.warnings.append(
+                        f"Footprint field '{lib}:{name}': that library isn't on this computer. The project library "
+                        f"has a footprint '{taken[name.lower()][1]}', but it isn't known to be the same part, so the "
+                        f"field was left unchanged.")
                 else:
                     plan.warnings.append(f"Footprint '{lib}:{name}' (schematic field) not found; skipped.")
                 continue
             origin = "library file" if src else "board copy"
+            # Read (or export) the footprint now: its content decides its name,
+            # and a board copy that can't be exported is never planned.
+            text = _read(src) if src else self._export_board_footprint(refs[(lib, name)])
+            if text is None:
+                plan.warnings.append(f"Footprint '{lib}:{name}' could not be exported from the board; "
+                                     f"it stays linked to '{lib}'.")
+                continue
 
-            new_name = name
-            ident = _file_hash(src) if src else f"board:{lib}:{name}"
-            if new_name in used_names and used_names[new_name] != ident:
-                new_name = f"{name}_{_safe_part(lib)}"
-                plan.warnings.append(f"Footprint name '{name}' is used by several libraries; "
-                                     f"'{lib}:{name}' becomes '{self.nickname}:{new_name}'.")
-            used_names.setdefault(new_name, ident)
-            plan.footprints[(lib, name)] = {'new_name': new_name, 'src': src, 'origin': origin,
-                                            'board_fp': refs.get((lib, name))}
+            new_name, exists = self._pick_name(name, lib, _fp_sig(text), taken, "Footprint", plan, fold_case=True)
+            plan.footprints[(lib, name)] = {'new_name': new_name, 'src': src, 'origin': origin, 'text': text,
+                                            'exists': exists, 'board_fp': refs.get((lib, name))}
 
         # A missing library whose every part was resolved by a remap isn't worth a warning.
         remapped_only = ({k.split(':', 1)[0] for k in plan.field_remaps}
@@ -540,15 +651,28 @@ class ProjectBundler:
                          if not any(w.startswith(f"Footprint library '{lib}' is not in any") for lib in remapped_only)]
         return board_fps
 
-    def _bundled_footprint_name(self, plan, name):
-        """Name under which footprint `name` is (or is about to be) in the
-        project library, or None."""
-        for (_, n), info in plan.footprints.items():
-            if n == name:
-                return info['new_name']
-        if os.path.isfile(os.path.join(self.fp_lib_path, name + '.kicad_mod')):
-            return name
+    def _load_sources(self):
+        try:
+            with open(self.sources_path, encoding='utf-8') as f:
+                data = json.load(f)
+            return {k: dict(data.get(k) or {}) for k in ('symbols', 'footprints')}
+        except (OSError, ValueError):
+            return {'symbols': {}, 'footprints': {}}
+
+    def _bundled_footprint_name(self, lib, name):
+        """Name of the bundled copy of exactly `lib:name`, per bundle_sources.json,
+        or None. A same-named footprint from another library never counts."""
+        for new_name, source in self._load_sources()['footprints'].items():
+            if source == f"{lib}:{name}" and os.path.isfile(os.path.join(self.fp_lib_path, new_name + '.kicad_mod')):
+                return new_name
         return None
+
+    def _write_sources(self, plan):
+        sources = self._load_sources()
+        for kind, items in (('symbols', plan.symbols), ('footprints', plan.footprints)):
+            for (lib, name), info in items.items():
+                sources[kind].setdefault(info['new_name'], f"{lib}:{name}")
+        _write(self.sources_path, json.dumps(sources, indent=2, sort_keys=True) + "\n")
 
     def _scan_models(self, plan, board_fps):
         raw_models = []
@@ -560,13 +684,22 @@ class ProjectBundler:
                 for m in re.finditer(r'\(model\s+"((?:[^"\\]|\\.)*)"', _read(info['src'])):
                     raw_models.append(_unq(m.group(1)))
 
-        dest_names = {}  # lower-case dest name -> source hash
+        dest_names = {}  # lower-case dest name -> content hash, seeded with models already bundled
+        if os.path.isdir(self.models_dir):
+            for f in os.listdir(self.models_dir):
+                path = os.path.join(self.models_dir, f)
+                if os.path.isfile(path):
+                    dest_names[f.lower()] = _file_hash(path)
+        wanted = ('custom', 'stock') if self.include_stock else ('custom',)
+        missing = set()
         for raw in raw_models:
-            if not raw or raw in plan.models or self._classify(raw) != 'custom':
+            if not raw or raw in plan.models or raw in missing or self._classify(raw) not in wanted:
                 continue
             src = self._expand(raw)
             if not src or not os.path.isfile(src):
-                plan.warnings.append(f"3D model not found: {raw}")
+                missing.add(raw)
+                plan.warnings.append(f"3D model not on this computer, left as is: {raw}. "
+                                     f"Bundle again on a computer that has it.")
                 continue
             dest = os.path.basename(src)
             h = _file_hash(src)
@@ -597,10 +730,24 @@ class ProjectBundler:
 
         step("Backing up files...")
         backup = self._backup()
+        self._created = []
+        self._board_undo = []
+        try:
+            result = self._apply(plan, step)
+        except BaseException:
+            # Never leave a half-bundled project: put every file back and undo
+            # the in-memory board edits, then report the original error.
+            self._rollback(backup)
+            raise
+        result['backup'] = backup
+        return result
 
+    def _apply(self, plan, step):
+
+        for d in (self.libs_dir, self.fp_lib_path, self.models_dir):
+            if not os.path.isdir(d):
+                self._created.append(d)
         os.makedirs(self.libs_dir, exist_ok=True)
-        fp_map = {f"{lib}:{name}": f"{self.nickname}:{i['new_name']}" for (lib, name), i in plan.footprints.items()}
-        fp_map.update(plan.field_remaps)
         model_map = {raw: self.new_model_path(i['dest_name']) for raw, i in plan.models.items()}
 
         if plan.models:
@@ -608,12 +755,22 @@ class ProjectBundler:
             os.makedirs(self.models_dir, exist_ok=True)
             for info in plan.models.values():
                 dest = os.path.join(self.models_dir, info['dest_name'])
-                if not os.path.exists(dest) or _file_hash(dest) != _file_hash(info['src']):
+                if not os.path.exists(dest):
+                    self._created.append(dest)
                     shutil.copy2(info['src'], dest)
 
         if plan.footprints:
             step("Writing footprint library...")
             self._write_footprints(plan, model_map)
+        if model_map:
+            # Footprints bundled earlier (e.g. on a computer that didn't have
+            # these models) still point at the original model paths.
+            self._relink_bundled_models(plan, model_map)
+
+        # Built after writing: a footprint that couldn't be written is dropped
+        # from the plan and must not be relinked to.
+        fp_map = {f"{lib}:{name}": f"{self.nickname}:{i['new_name']}" for (lib, name), i in plan.footprints.items()}
+        fp_map.update(plan.field_remaps)
 
         if plan.symbols:
             step("Writing symbol library...")
@@ -634,6 +791,8 @@ class ProjectBundler:
             step("Saving board...")
             self._save_board(model_map)
 
+        self._write_sources(plan)
+
         step("Updating project library tables...")
         if plan.symbols:
             self._add_to_table('sym-lib-table', 'sym_lib_table',
@@ -644,20 +803,66 @@ class ProjectBundler:
 
         return {'symbols': len(plan.symbols), 'footprints': len(plan.footprints),
                 'models': len(plan.models), 'sheets': changed_sheets,
-                'board_footprints': changed_fps, 'backup': backup}
+                'board_footprints': changed_fps}
+
+
+    def _rollback(self, backup):
+        """Restores the files saved by _backup(), removes everything this run
+        created, and reverts the relinked footprints on the open board."""
+        import pcbnew
+        for fp, (lib, name), models in reversed(self._board_undo):
+            try:
+                fp.SetFPID(pcbnew.LIB_ID(lib, name))
+                m = fp.Models()
+                for i, name in models:
+                    m[i].m_Filename = name
+            except Exception:
+                pass
+        for path in reversed(self._created):
+            try:
+                if os.path.isdir(path):
+                    shutil.rmtree(path, ignore_errors=True)
+                elif os.path.exists(path):
+                    os.remove(path)
+            except OSError:
+                pass
+        for rel, existed in self._backed_up:
+            target = os.path.join(self.project_dir, rel)
+            try:
+                if existed:
+                    os.makedirs(os.path.dirname(target), exist_ok=True)
+                    if os.path.isdir(os.path.join(backup, rel)):
+                        shutil.rmtree(target, ignore_errors=True)
+                        shutil.copytree(os.path.join(backup, rel), target)
+                    elif not (os.path.isfile(target) and _file_hash(target) == _file_hash(os.path.join(backup, rel))):
+                        shutil.copy2(os.path.join(backup, rel), target)
+                elif os.path.isfile(target):
+                    os.remove(target)
+            except OSError as e:
+                print(f"Bundle rollback could not restore {rel}: {e}")
 
     def _backup(self):
+        """Copies every file a bundle can change to .bundle_backup/<time>/ and
+        records which of them existed, for _rollback()."""
         stamp = datetime.datetime.now().strftime('%Y%m%d-%H%M%S')
         dest = os.path.join(self.project_dir, BACKUP_DIR, stamp)
         os.makedirs(dest, exist_ok=True)
-        files = self.schematic_files() + [os.path.join(self.project_dir, t) for t in ('sym-lib-table', 'fp-lib-table')]
+        paths = self.schematic_files() + [os.path.join(self.project_dir, t) for t in ('sym-lib-table', 'fp-lib-table')]
+        paths += [self.sym_lib_path, self.fp_lib_path, self.sources_path]
         if self.pcb_file:
-            files.append(self.pcb_file)
-        for f in files:
+            # Saving the board rewrites the project files too.
+            stem = os.path.splitext(self.pcb_file)[0]
+            paths += [self.pcb_file, stem + '.kicad_pro', stem + '.kicad_prl']
+        self._backed_up = []
+        for f in paths:
+            rel = os.path.relpath(f, self.project_dir)
+            self._backed_up.append((rel, os.path.exists(f)))
             if os.path.isfile(f):
-                rel = os.path.relpath(f, self.project_dir)
                 os.makedirs(os.path.dirname(os.path.join(dest, rel)), exist_ok=True)
-                shutil.copy2(f, os.path.join(dest, rel))
+                # Plain copies: a read-only original must not make the backup undeletable.
+                shutil.copyfile(f, os.path.join(dest, rel))
+            elif os.path.isdir(f):
+                shutil.copytree(f, os.path.join(dest, rel), copy_function=shutil.copyfile)
         self._ensure_gitignored(BACKUP_DIR + '/')
         return dest
 
@@ -680,20 +885,32 @@ class ProjectBundler:
         return re.sub(r'\(model\s+"((?:[^"\\]|\\.)*)"', sub, text)
 
     def _write_footprints(self, plan, model_map):
+        """Writes the planned footprints. A footprint whose identical copy is
+        already in the project library is reused, never rewritten."""
         os.makedirs(self.fp_lib_path, exist_ok=True)
         for (lib, name), info in plan.footprints.items():
-            dest = os.path.join(self.fp_lib_path, info['new_name'] + '.kicad_mod')
-            if info['src']:
-                text = _read(info['src'])
-            else:
-                text = self._export_board_footprint(info['board_fp'])
-                if text is None:
-                    plan.warnings.append(f"Could not export '{lib}:{name}' from the board.")
-                    continue
+            if info['exists']:
+                continue
+            text = info['text']
             if info['new_name'] != name:
-                text = re.sub(r'^\(footprint\s+"(?:[^"\\]|\\.)*"', '(footprint ' + _q(info['new_name']),
-                              text, count=1)
+                # KiCad 5 libraries still use "(module" instead of "(footprint".
+                text = re.sub(r'^\((footprint|module)\s+("(?:[^"\\]|\\.)*"|[^\s()]+)',
+                              lambda m: f'({m.group(1)} ' + _q(info['new_name']), text.lstrip(), count=1)
+            dest = os.path.join(self.fp_lib_path, info['new_name'] + '.kicad_mod')
+            self._created.append(dest)
             _write(dest, self._rewrite_models(text, model_map))
+
+    def _relink_bundled_models(self, plan, model_map):
+        if not os.path.isdir(self.fp_lib_path):
+            return
+        just_written = {i['new_name'] + '.kicad_mod' for i in plan.footprints.values() if not i['exists']}
+        for f in os.listdir(self.fp_lib_path):
+            if f.endswith('.kicad_mod') and f not in just_written:
+                path = os.path.join(self.fp_lib_path, f)
+                text = _read(path)
+                fixed = self._rewrite_models(text, model_map)
+                if fixed != text:
+                    _write(path, fixed)
 
     def _export_board_footprint(self, fp):
         """Saves a board footprint (reset to origin, front side) to a temp
@@ -713,7 +930,25 @@ class ProjectBundler:
                 clone.SetPosition(pcbnew.VECTOR2I(0, 0))
             except Exception:
                 pass
-            pcbnew.FootprintSave(tmp, clone)
+            # Strip what belongs to this one placement, as a library footprint
+            # has no designator, schematic sheet or nets.
+            for call, arg in (('SetReference', 'REF**'), ('SetSheetname', ''), ('SetSheetfile', ''),
+                              ('SetPath', None), ('SetLocked', False)):
+                try:
+                    if arg is None:
+                        getattr(clone, call)(pcbnew.KIID_PATH())
+                    else:
+                        getattr(clone, call)(arg)
+                except Exception:
+                    pass
+            try:
+                for pad in clone.Pads():
+                    pad.SetNetCode(0)
+            except Exception:
+                pass
+            # Not pcbnew.FootprintSave(): it picks the writer by inspecting the
+            # folder, and an empty .pretty isn't recognised (it returns None).
+            pcbnew.PCB_IO_KICAD_SEXPR().FootprintSave(tmp, clone)
             files = [f for f in os.listdir(tmp) if f.endswith('.kicad_mod')]
             return _read(os.path.join(tmp, files[0])) if files else None
         except Exception as e:
@@ -824,8 +1059,12 @@ class ProjectBundler:
                 return '(lib_id ' + _q(id_map[v]) + ')' if v in id_map else m.group(0)
             text = re.sub(r'\(lib_id\s+"((?:[^"\\]|\\.)*)"\)', sub_id, text)
 
-            # 3. Footprint fields (instances and cache)
+            # 3. Footprint fields (instances and cache), and KiCad 6
+            #    (symbol_instances ... (footprint "lib:name")).
             text = self._rewrite_fp_fields(text, fp_map)
+            text = re.sub(r'\(footprint\s+"((?:[^"\\]|\\.)*)"\)',
+                          lambda m: '(footprint ' + _q(fp_map[_unq(m.group(1))]) + ')'
+                          if _unq(m.group(1)) in fp_map else m.group(0), text)
 
             if text != orig:
                 _write(path, text)
@@ -841,6 +1080,7 @@ class ProjectBundler:
             fpid = fp.GetFPID()
             key = (str(fpid.GetLibNickname()), str(fpid.GetLibItemName()))
             touched = False
+            undo = (fp, key, [])
             if key in plan.footprints:
                 fp.SetFPID(pcbnew.LIB_ID(self.nickname, plan.footprints[key]['new_name']))
                 touched = True
@@ -849,8 +1089,11 @@ class ProjectBundler:
             models = fp.Models()
             for i in range(len(models)):
                 if models[i].m_Filename in model_map:
+                    undo[2].append((i, models[i].m_Filename))
                     models[i].m_Filename = model_map[models[i].m_Filename]
                     touched = True
+            if touched:
+                self._board_undo.append(undo)
             changed += touched
         return changed
 
@@ -859,7 +1102,9 @@ class ProjectBundler:
         mark the editor as modified, so Ctrl+S is a no-op and closing the
         project discards them silently — the board must be saved here."""
         import pcbnew
-        pcbnew.SaveBoard(self.pcb_file, self.board)
+        if pcbnew.SaveBoard(self.pcb_file, self.board) is False:
+            raise RuntimeError(f"Could not save {os.path.basename(self.pcb_file)} "
+                               "(read-only, or locked by another program such as a sync client).")
         text = _read(self.pcb_file)
         missing = [p for p in set(model_map.values()) if '(model ' + _q(p) not in text]
         if missing and any(m.m_Filename in missing for fp in self.board.GetFootprints() for m in fp.Models()):

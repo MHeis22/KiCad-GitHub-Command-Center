@@ -10,7 +10,7 @@ import time
 import hashlib
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from .utils import CREATE_NO_WINDOW, find_kicad_cli, TMP_OLD_PREFIX, load_effective_settings
+from .utils import CREATE_NO_WINDOW, find_kicad_cli, TMP_OLD_PREFIX, load_effective_settings, sweep_temp_files
 from .bom_generator import BOMGenerator
 from .kicad_parser import (
     get_pcb_layers, get_pcb_dimensions, get_pcb_structure,
@@ -28,6 +28,7 @@ class DiffEngine:
         # Old SVG/HTML artifacts from previous sessions pile up here forever
         # (a multilayer board can leave hundreds of MB), so sweep stale ones now.
         self._prune_temp_dir()
+        sweep_temp_files(self.project_dir)  # leftovers of an interrupted earlier diff
 
         self.kicad_cli = find_kicad_cli()
         self.git_cmd = "git.exe" if os.name == "nt" else "git"
@@ -692,5 +693,6 @@ class DiffEngine:
                     if os.path.isdir(stem + "-backups"):
                         shutil.rmtree(stem + "-backups", ignore_errors=True)
 
+        sweep_temp_files(self.project_dir)
         summary = "\n".join(summary_lines) if summary_lines else "No files found."
         return diffs, summary

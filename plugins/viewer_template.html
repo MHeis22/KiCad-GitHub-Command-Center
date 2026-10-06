@@ -329,7 +329,7 @@
             </div>
             
             <div class="toolbar-right">
-                <button onclick="resetTransform()" id="reset-btn" class="hidden btn-secondary" title="Reset Zoom">🔍 Zoom Fit</button>
+                <button onclick="fitView()" id="reset-btn" class="hidden btn-secondary" title="Fit the board / drawing to the view (0, Home or double-click)">🔍 Zoom Fit</button>
                 <div class="segmented-control">
                     <button onclick="toggleDiff()" id="btn-toggle-diff" class="hidden" title="Toggle Target Version (Space)">Toggle</button>
                     <button onclick="toggleOverlay()" id="btn-toggle-overlay" class="hidden" title="Overlay Mode (O)">Overlay</button>
@@ -544,6 +544,79 @@
             setTransform();
         }
 
+        // --- Fit to content ---------------------------------------------------
+        // The exported SVGs are whole pages; the board (or the drawing) is a
+        // small, usually off-centre part of it. Find where something is
+        // actually drawn and fit that into the pane.
+        const contentBoxes = new Map();   // image src -> drawn area (fractions of the image) or null
+
+        async function contentBox(img) {
+            if (!img || !img.getAttribute('src')) return null;
+            const key = img.src;
+            if (contentBoxes.has(key)) return contentBoxes.get(key);
+            try { await img.decode(); } catch (e) { /* already decoded, or not decodable */ }
+            const nw = img.naturalWidth, nh = img.naturalHeight;
+            if (!nw || !nh) return null;
+            const k = Math.min(1, 1200 / Math.max(nw, nh));
+            const cw = Math.max(1, Math.round(nw * k)), ch = Math.max(1, Math.round(nh * k));
+            let box = null;
+            try {
+                const canvas = document.createElement('canvas');
+                canvas.width = cw; canvas.height = ch;
+                const ctx = canvas.getContext('2d', { willReadFrequently: true });
+                ctx.drawImage(img, 0, 0, cw, ch);
+                const d = ctx.getImageData(0, 0, cw, ch).data;
+                // Background = the corner colour (transparent, or a filled page).
+                const br = d[0], bg = d[1], bb = d[2], ba = d[3];
+                let x0 = cw, y0 = ch, x1 = -1, y1 = -1;
+                for (let y = 0; y < ch; y++) {
+                    let row = y * cw * 4;
+                    for (let x = 0; x < cw; x++, row += 4) {
+                        const a = d[row + 3];
+                        if (a < 24) continue;
+                        if (ba >= 24 && Math.abs(d[row] - br) + Math.abs(d[row + 1] - bg) + Math.abs(d[row + 2] - bb) < 60) continue;
+                        if (x < x0) x0 = x; if (x > x1) x1 = x;
+                        if (y < y0) y0 = y; if (y > y1) y1 = y;
+                    }
+                }
+                if (x1 >= 0) box = { x0: x0 / cw, y0: y0 / ch, x1: (x1 + 1) / cw, y1: (y1 + 1) / ch, nw, nh };
+            } catch (e) {
+                console.warn('Fit to content unavailable for this image:', e);
+            }
+            contentBoxes.set(key, box);
+            return box;
+        }
+
+        let fitToken = 0;
+        async function fitView() {
+            if (currentTab !== 'visual' || activeIndex < 0) return;
+            const token = ++fitToken;
+            // Old and new together, so toggling between them doesn't jump.
+            const imgs = ['old-img', 'new-img'].map(id => document.getElementById(id))
+                .filter(el => el && el.getAttribute('src') && !el.src.startsWith('data:application/pdf'));
+            const boxes = (await Promise.all(imgs.map(contentBox))).filter(Boolean);
+            if (token !== fitToken) return;                 // a newer fit started meanwhile
+            const pane = document.getElementById('img-wrapper-new').parentElement;
+            const W = pane.clientWidth, H = pane.clientHeight;
+            if (!boxes.length || !W || !H) { resetTransform(); return; }
+            const { nw, nh } = boxes[0];
+            const u = {
+                x0: Math.min(...boxes.map(b => b.x0)), y0: Math.min(...boxes.map(b => b.y0)),
+                x1: Math.max(...boxes.map(b => b.x1)), y1: Math.max(...boxes.map(b => b.y1)),
+            };
+            // Where the image sits in the pane at scale 1 (object-fit: contain).
+            const s = Math.min(W / nw, H / nh), ox = (W - nw * s) / 2, oy = (H - nh * s) / 2;
+            let bx0 = ox + u.x0 * nw * s, bx1 = ox + u.x1 * nw * s;
+            const by0 = oy + u.y0 * nh * s, by1 = oy + u.y1 * nh * s;
+            if (flipBoard) { [bx0, bx1] = [W - bx1, W - bx0]; }   // flipped images mirror about the pane centre
+            const bw = bx1 - bx0, bh = by1 - by0;
+            if (bw < 2 || bh < 2) { resetTransform(); return; }
+            scale = Math.min(50, Math.max(0.1, 0.92 * Math.min(W / bw, H / bh)));
+            pointX = W / 2 - scale * (bx0 + bx1) / 2;
+            pointY = H / 2 - scale * (by0 + by1) / 2;
+            setTransform();
+        }
+
         sliderHandle.addEventListener('mousedown', (e) => { draggingSlider = true; e.stopPropagation(); e.preventDefault(); });
         window.addEventListener('mouseup', () => { draggingSlider = false; panning = false; });
 
@@ -555,6 +628,9 @@
         };
 
         viewerContainer.onmouseleave = function (e) { panning = false; draggingSlider = false; };
+        viewerContainer.addEventListener('dblclick', function (e) {
+            if (currentTab === 'visual' && !draggingSlider) { e.preventDefault(); fitView(); }
+        });
 
         viewerContainer.onmousemove = function (e) {
             if (draggingSlider && swipeMode && !splitMode) {
@@ -572,25 +648,80 @@
             setTransform();
         };
 
-        viewerContainer.onwheel = function (e) {
+        // Zoom about a point given in viewport coordinates. The images are
+        // transformed from the top-left of their pane (transform-origin 0 0),
+        // so the point is converted into the coordinates of the pane under it.
+        function paneOrigin(clientX, clientY) {
+            for (const id of ['img-wrapper-old', 'img-wrapper-new', 'img-wrapper-old-right', 'img-wrapper-new-right']) {
+                const el = document.getElementById(id);
+                if (!el || el.offsetParent === null) continue;
+                const p = el.parentElement, r = p.getBoundingClientRect();
+                if (clientX >= r.left && clientX <= r.right && clientY >= r.top && clientY <= r.bottom) {
+                    // Inside the border (the right pane has one in split view).
+                    return { left: r.left + p.clientLeft, top: r.top + p.clientTop };
+                }
+            }
+            const r = viewerContainer.getBoundingClientRect();
+            return { left: r.left + viewerContainer.clientLeft, top: r.top + viewerContainer.clientTop };
+        }
+
+        function zoomAt(clientX, clientY, factor) {
+            const r = paneOrigin(clientX, clientY);
+            const cx = clientX - r.left, cy = clientY - r.top;
+            const newScale = Math.min(50, Math.max(0.1, scale * factor));
+            factor = newScale / scale;
+            pointX = cx - (cx - pointX) * factor;
+            pointY = cy - (cy - pointY) * factor;
+            scale = newScale;
+        }
+
+        // Wheel input comes from three very different devices:
+        //  - a mouse wheel: few, large steps (deltaMode lines, or ~100 px per notch)  -> zoom
+        //  - a touchpad pinch: many tiny steps with ctrlKey set (Chrome, Edge, Firefox) -> zoom
+        //  - a touchpad two-finger scroll: many tiny x/y steps                          -> pan
+        // Zoom is proportional to the delta, so a pinch follows the fingers instead
+        // of jumping 20% per event. Events are accumulated and applied once per
+        // frame, never dropped.
+        let wheelZoom = 1, wheelPanX = 0, wheelPanY = 0, wheelAt = null;
+        viewerContainer.addEventListener('wheel', function (e) {
             if (currentTab !== 'visual') return;
             e.preventDefault();
+            let dx = e.deltaX, dy = e.deltaY;
+            if (e.deltaMode === 1) { dx *= 33; dy *= 33; }   // Firefox: 3 lines per notch ~ 100 px, as in Chrome
+            else if (e.deltaMode === 2) { dx *= viewerContainer.clientHeight; dy *= viewerContainer.clientHeight; }
+            const mouseWheel = e.deltaMode !== 0 || (dx === 0 && Math.abs(dy) >= 50 && Number.isInteger(dy));
+            if (mouseWheel) {
+                wheelZoom *= Math.exp(-dy * 0.0015);             // one notch (100 px) ~ 14%
+            } else if (e.ctrlKey) {
+                wheelZoom *= Math.exp(-Math.max(-50, Math.min(50, dy)) * 0.01);  // pinch
+            } else {
+                wheelPanX -= dx; wheelPanY -= dy;                // two-finger scroll pans
+            }
+            wheelAt = { x: e.clientX, y: e.clientY };
             if (wheelPending) return;
             wheelPending = true;
-            const cx = e.clientX, cy = e.clientY;
-            const delta = (e.wheelDelta ? e.wheelDelta : -e.deltaY);
             requestAnimationFrame(() => {
-                let xs = (cx - pointX) / scale;
-                let ys = (cy - pointY) / scale;
-                (delta > 0) ? (scale *= 1.2) : (scale /= 1.2);
-                if (scale < 0.1) scale = 0.1;
-                if (scale > 50) scale = 50;
-                pointX = cx - xs * scale;
-                pointY = cy - ys * scale;
+                if (wheelZoom !== 1) zoomAt(wheelAt.x, wheelAt.y, wheelZoom);
+                pointX += wheelPanX; pointY += wheelPanY;
+                wheelZoom = 1; wheelPanX = 0; wheelPanY = 0;
                 setTransform();
                 wheelPending = false;
             });
-        };
+        }, { passive: false });
+
+        // Safari on macOS reports trackpad pinches as gesture events instead.
+        let gestureStartScale = 1;
+        viewerContainer.addEventListener('gesturestart', function (e) {
+            if (currentTab !== 'visual') return;
+            e.preventDefault();
+            gestureStartScale = scale;
+        });
+        viewerContainer.addEventListener('gesturechange', function (e) {
+            if (currentTab !== 'visual') return;
+            e.preventDefault();
+            zoomAt(e.clientX, e.clientY, (gestureStartScale * e.scale) / scale);
+            setTransform();
+        });
 
         sliderHandle.addEventListener('touchstart', (e) => { draggingSlider = true; e.stopPropagation(); }, {passive: false});
 
@@ -796,18 +927,19 @@
             flipBoard = false;
             flipCheckbox.checked = false;
             
-            switchTab('visual'); 
-            resetTransform(); 
-            
+            switchTab('visual');
+            resetTransform();
+
             document.querySelectorAll('.file-item').forEach((el, i) => {
                 el.classList.toggle('active', i === index);
             });
             renderView();
+            fitView();
         }
 
         function toggleSilk(val) { showSilk = val; renderView(); }
         function toggleMaskPaste(val) { showMaskPaste = val; renderView(); }
-        function toggleFlip(val) { flipBoard = val; renderView(); }
+        function toggleFlip(val) { flipBoard = val; renderView(); fitView(); }
 
         function toggleHelp() {
             helpVisible = !helpVisible;
@@ -1252,9 +1384,10 @@
 
         function toggleSplit() { 
             if (activeIndex < 0 || currentTab !== 'visual') return; 
-            splitMode = !splitMode; 
-            if (splitMode) swipeMode = false; 
-            renderView(); 
+            splitMode = !splitMode;
+            if (splitMode) swipeMode = false;
+            renderView();
+            fitView();   // the pane changed width
         }
 
         function toggleSwipe() { 
@@ -1299,6 +1432,7 @@
             else if (event.code === 'KeyT') { event.preventDefault(); toggleTheme(); }
             else if (event.code === 'KeyC') { event.preventDefault(); toggleColorblind(); }
             else if (event.code === 'KeyF') { event.preventDefault(); flipCheckbox.checked = !flipCheckbox.checked; toggleFlip(flipCheckbox.checked); }
+            else if (event.code === 'Digit0' || event.code === 'Numpad0' || event.code === 'Home') { event.preventDefault(); fitView(); }
             else if (event.key >= '1' && event.key <= '9') { const idx = parseInt(event.key) - 1; if (layerDrop.options[idx]) { layerDrop.selectedIndex = idx; changeLayer(layerDrop.value, 'left'); } }
             else if (event.code === 'KeyS') { event.preventDefault(); silkCheckbox.checked = !silkCheckbox.checked; toggleSilk(silkCheckbox.checked); }
             else if (event.code === 'KeyM') { event.preventDefault(); maskPasteCheckbox.checked = !maskPasteCheckbox.checked; toggleMaskPaste(maskPasteCheckbox.checked); }
@@ -1369,6 +1503,10 @@
             <div class="sc-row"><span class="sc-desc">Next file in sidebar</span><kbd class="sc-key">↓ / →</kbd></div>
             <div class="sc-row"><span class="sc-desc">Previous file in sidebar</span><kbd class="sc-key">↑ / ←</kbd></div>
             <div class="sc-section">General</div>
+            <div class="sc-row"><span class="sc-desc">Fit board / drawing to view</span><kbd class="sc-key">0 / Home / double-click</kbd></div>
+            <div class="sc-row"><span class="sc-desc">Zoom (mouse)</span><kbd class="sc-key">Wheel</kbd></div>
+            <div class="sc-row"><span class="sc-desc">Zoom (touchpad)</span><kbd class="sc-key">Pinch / Ctrl + scroll</kbd></div>
+            <div class="sc-row"><span class="sc-desc">Pan</span><kbd class="sc-key">Drag / two-finger scroll</kbd></div>
             <div class="sc-row"><span class="sc-desc">Show this panel</span><kbd class="sc-key">?</kbd></div>
             <div class="sc-row"><span class="sc-desc">Close panel</span><kbd class="sc-key">Esc</kbd></div>
         </div>

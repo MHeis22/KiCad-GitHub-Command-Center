@@ -67,14 +67,16 @@ def _make_action_button(parent, label, light=None, dark=None, size=(-1, 40)):
 from .utils import (CREATE_NO_WINDOW, git_network_kwargs, project_files,
                     load_effective_settings, save_effective_settings,
                     get_last_target, save_last_target, load_project_settings, save_project_settings,
-                    get_installed_version, fetch_json)
-from .ui_dialogs import SettingsDialog, CommitDialog, BundlePreviewDialog
+                    get_installed_version, fetch_json, project_settings_problem)
+from .ui_dialogs import SettingsDialog, CommitDialog, BundlePreviewDialog, wait_until_done
+from .merge_dialog import ConflictDialog, project_sheet_locks
+from .merge_resolver import MergeResolver, DuplicateReferences, MergeCheckFailed, MINE
 from .diff_engine import DiffEngine
 from .diff_window import DiffWindow
 from .readme_generator import ReadmeGenerator
 from .bom_generator import BOMGenerator
 from .bom_dialogs import BOMOptionsDialog, BOMReportDialog
-from .jlcpcb_exporter import JLCPCBExporter
+from .jlcpcb_exporter import generate_gerber_zip
 from .model_exporter import Model3DExporter
 from .schematic_exporter import SchematicExporter
 from .jlcpcb_rules import set_jlcpcb_constraints
@@ -112,6 +114,7 @@ class CommandCenterDialog(wx.Dialog):
         # `kicad_version` property block only if that probe hasn't finished yet.
         self._kicad_version = None
         self._kicad_version_lock = threading.Lock()
+        self._fetch_lock = threading.Lock()
         threading.Thread(target=self._warm_kicad_version, daemon=True).start()
         self.settings = load_effective_settings(project_dir)
         
@@ -330,6 +333,9 @@ class CommandCenterDialog(wx.Dialog):
 
         self.update_git_status()
         self._check_and_prompt_git_encoding()
+        problem = project_settings_problem(self.project_dir)
+        if problem:
+            wx.MessageBox(problem, "Project Settings", wx.ICON_WARNING)
         threading.Thread(target=self._check_for_updates, daemon=True).start()
         threading.Thread(target=self._check_remote_ahead, daemon=True).start()
 
@@ -376,7 +382,9 @@ class CommandCenterDialog(wx.Dialog):
             if not upstream:
                 return  # branch doesn't track a server branch
             remote = upstream.split('/', 1)[0]
-            if self._git(["fetch", "--quiet", remote], network=True).returncode != 0:
+            with self._fetch_lock:
+                fetched = self._git(["fetch", "--quiet", remote], network=True).returncode == 0
+            if not fetched:
                 return  # offline or no credentials: say nothing
             behind = int(self._git(["rev-list", "--count", f"HEAD..{upstream}"]).stdout.strip() or 0)
             if behind:
@@ -1001,25 +1009,30 @@ class CommandCenterDialog(wx.Dialog):
             self.on_force_sync(None, default_target=upstream)
 
     def on_pull(self, event):
-        """Brings in the server's commits without discarding anything local.
+        self._pull()
 
-        Fast-forwards when there are no local commits; merges otherwise. It
-        refuses (and offers Force Download) when uncommitted edits would be
-        overwritten, or when both sides changed the same schematic/board, since
-        git can't merge KiCad files safely line by line."""
+    def _pull(self):
+        """Brings in the server's commits without discarding anything local.
+        Returns True when the local branch now contains the server's commits.
+
+        Fast-forwards when there are no local commits. When both sides have
+        commits, files both changed get a per-file choice (_merge_diverged).
+        Refuses (and offers Force Download) when uncommitted edits would be
+        overwritten."""
         if not os.path.isdir(os.path.join(self.project_dir, ".git")):
             wx.MessageBox("No Git repo found. Please initialize and link first.", "Error")
-            return
+            return False
         branch = self._git(["branch", "--show-current"]).stdout.strip()
         if not branch:
             wx.MessageBox("You're not on a branch (detached HEAD). Switch to a branch first.", "Pull")
-            return
+            return False
 
         self.status_lbl.SetLabel("Status: Fetching from the server...")
         self.status_lbl.Update()
         with wx.BusyCursor():
             try:
-                fetch = self._git(["fetch", "origin"], network=True)
+                with self._fetch_lock:  # wait for the background server check, if running
+                    fetch = self._git(["fetch", "origin"], network=True)
             except subprocess.TimeoutExpired:
                 fetch = None
         if fetch is None or fetch.returncode != 0:
@@ -1028,7 +1041,7 @@ class CommandCenterDialog(wx.Dialog):
                           + ((fetch.stderr.strip() if fetch else "") or "The connection timed out.")
                           + "\n\nCheck your network connection and git credentials.",
                           "Pull Failed", wx.ICON_ERROR)
-            return
+            return False
 
         upstream = self._git(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]).stdout.strip()
         if not upstream:
@@ -1036,7 +1049,7 @@ class CommandCenterDialog(wx.Dialog):
         if self._git(["rev-parse", "--verify", "--quiet", upstream]).returncode != 0:
             self.update_git_status()
             wx.MessageBox(f"The server has no branch '{upstream}' yet. Push this branch first.", "Pull")
-            return
+            return False
 
         counts = self._git(["rev-list", "--left-right", "--count", f"HEAD...{upstream}"]).stdout.split()
         ahead, behind = (int(counts[0]), int(counts[1])) if len(counts) == 2 else (0, 0)
@@ -1046,7 +1059,7 @@ class CommandCenterDialog(wx.Dialog):
             if ahead:
                 msg += f"\n\nYou have {ahead} local commit(s) the server doesn't have yet; push them when ready."
             wx.MessageBox(msg, "Pull")
-            return
+            return True
 
         # Paths are repo-root relative in all of these.
         incoming = self._git_paths(["diff", "--name-only", "-z", f"HEAD...{upstream}"])
@@ -1066,7 +1079,7 @@ class CommandCenterDialog(wx.Dialog):
                 go = dlg.ShowModal() == wx.ID_YES
                 dlg.Destroy()
                 if not go:
-                    return
+                    return False
                 tracked = [p for p in blocking if p in uncommitted]
                 if tracked:
                     self._git(["checkout", "HEAD", "--"] + tracked)
@@ -1083,40 +1096,17 @@ class CommandCenterDialog(wx.Dialog):
                     "Your uncommitted changes to these files would be overwritten by the "
                     "incoming changes:\n\n- " + "\n- ".join(blocking) + "\n\nCommit them "
                     "first to keep them (then pull again to merge), or", upstream)
-                return
+                return False
 
-        kicad_exts = (".kicad_pcb", ".kicad_sch")
+        # Files git can't merge line by line without risking a file KiCad rejects.
+        # (.kicad_sym holds many symbols in one file, so edits to different
+        # symbols merge fine; real conflicts are caught by the dry run below.)
+        kicad_exts = (".kicad_pcb", ".kicad_sch", ".kicad_mod")
         if ahead:
-            # Diverged: both sides have commits. A text merge of a board or
-            # schematic both sides edited can produce a file KiCad rejects.
-            local = self._git_paths(["diff", "--name-only", "-z", f"{upstream}...HEAD"])
-            both = sorted(p for p in local & incoming if p.endswith(kicad_exts))
-            if both:
-                self.update_git_status()
-                self._offer_force_sync(
-                    f"Both you ({ahead} local commit(s)) and the server ({behind} new commit(s)) "
-                    "changed:\n\n- " + "\n- ".join(both) + "\n\nKiCad schematics and boards "
-                    "can't be merged automatically.", upstream)
-                return
-            # Dry-run the merge first (git 2.38+; exit 1 = conflicts) so a
-            # conflicting pull never touches the working tree at all.
-            trial = self._git(["merge-tree", "--write-tree", "--name-only", "HEAD", upstream])
-            if trial.returncode == 1:
-                # Output: tree id, conflicted paths, blank line, messages.
-                conflicted = []
-                for line in trial.stdout.splitlines()[1:]:
-                    if not line:
-                        break
-                    conflicted.append(line)
-                self.update_git_status()
-                self._offer_force_sync(
-                    "Your local commits and the server's changes conflict"
-                    + (":\n\n- " + "\n- ".join(sorted(set(conflicted))) if conflicted else ".")
-                    + "\n\nThey can't be merged automatically.", upstream)
-                return
-            res = self._git(["merge", "--no-edit", upstream])
-        else:
-            res = self._git(["merge", "--ff-only", upstream])
+            # Diverged: both sides have commits. Files both changed get a
+            # per-file choice; nothing changes until every check passes.
+            return self._merge_diverged(upstream, ahead, behind)
+        res = self._git(["merge", "--ff-only", upstream])
 
         if res.returncode != 0:
             # Leave the repo as it was, never half-merged.
@@ -1125,7 +1115,7 @@ class CommandCenterDialog(wx.Dialog):
             self.update_git_status()
             self._offer_force_sync("The pull could not be completed, nothing was changed:\n\n"
                                    + ((res.stderr or res.stdout).strip() or "unknown error"), upstream)
-            return
+            return False
 
         pcbnew.Refresh()
         self.update_git_status()
@@ -1137,6 +1127,93 @@ class CommandCenterDialog(wx.Dialog):
                     + "\n\nClose and reopen them to see the changes. If KiCad asks to save, "
                     "choose 'Discard Changes'.")
         wx.MessageBox(msg, "Pull Complete")
+        return True
+
+    def _merge_diverged(self, upstream, ahead, behind):
+        """Merges the server's commits into local commits, asking per file
+        which version to keep where both sides changed it. Returns True when
+        merged."""
+        dirty = [line[3:] for line in self._git(["status", "--porcelain", "--untracked-files=no"]).stdout.splitlines()
+                 if not line[3:].endswith(".kicad_prl")]
+        if dirty:
+            self.update_git_status()
+            wx.MessageBox("Commit or stash your changes before merging the server's commits:\n\n- "
+                          + "\n- ".join(dirty[:15]), "Pull", wx.ICON_WARNING)
+            return False
+
+        resolver = MergeResolver(self.project_dir, git_cmd=self.git_cmd)
+        items = resolver.analyze(upstream)
+        if any(i.kind == 'design' for i in items) and project_sheet_locks(self.project_dir):
+            # The merge rewrites schematics; an open Schematic Editor would
+            # later save its old copy over them.
+            if not wait_until_done(
+                    self, "Merge Server Changes",
+                    "Close the Schematic Editor to continue: the merge changes the schematic files.\n\n"
+                    "The merge continues automatically once it is closed.",
+                    lambda: bool(project_sheet_locks(self.project_dir))):
+                return False
+
+        choices = {}
+        while True:
+            if any(i.needs_choice for i in items):
+                dlg = ConflictDialog(self, items, upstream, ahead, behind, previous=choices)
+                ok = dlg.ShowModal() == wx.ID_OK
+                choices = dlg.get_choices()
+                dlg.Destroy()
+                if not ok:
+                    self.update_git_status()
+                    return False
+            try:
+                with wx.BusyCursor():
+                    self._set_status("Merging...")
+                    result = resolver.merge(upstream, items, choices,
+                                            message=f"Merge {upstream} into {self._git(['branch', '--show-current']).stdout.strip()}")
+                break
+            except (DuplicateReferences, MergeCheckFailed) as e:
+                wx.MessageBox(str(e), "Merge Not Possible With These Choices", wx.ICON_WARNING)
+                if not any(i.needs_choice for i in items):
+                    return False
+            except Exception as e:
+                self.update_git_status()
+                wx.MessageBox(f"The merge could not be completed, nothing was changed:\n\n{e}",
+                              "Pull Failed", wx.ICON_ERROR)
+                return False
+
+        if result.regenerate:
+            open(self._regen_flag_path(), "w").close()
+        pcbnew.Refresh()
+        self.update_git_status()
+
+        lines = [f"Merged {behind} server commit(s) with your {ahead}."]
+        if result.taken_theirs:
+            lines.append("Taken from the server: " + ", ".join(result.taken_theirs))
+        board_changed = any(i.kind == 'design' and i.path.endswith('.kicad_pcb') and choices.get(i.path) != MINE
+                            for i in items) or bool(self._git_paths(["diff", "--name-only", "-z", "HEAD^1", "HEAD"])
+                                                    & {p for p in self._git_paths(["ls-files", "-z", "*.kicad_pcb"])})
+        if board_changed:
+            lines.append("\nThe board file changed. The PCB editor still shows the old board: close it WITHOUT "
+                         "saving (choose 'Discard Changes') and open it again. Saving now would undo the merge.")
+        if any(i.kind == 'design' and i.path.endswith('.kicad_sch') for i in items):
+            lines.append("\nSchematics changed: reopen the Schematic Editor to see them.")
+        if result.ref_mismatches:
+            pairs = ", ".join(f"{b} -> {s}" for b, s in result.ref_mismatches[:8])
+            lines.append(f"\n{len(result.ref_mismatches)} footprint(s) no longer match their symbol's reference "
+                         f"({pairs}{' ...' if len(result.ref_mismatches) > 8 else ''}). After reopening, run "
+                         "Update PCB from Schematic (F8).")
+        elif result.mixed:
+            lines.append("\nSome files are yours and some the server's: check the design with ERC/DRC and "
+                         "Update PCB from Schematic (F8).")
+        if result.regenerate:
+            lines.append("\nGenerated files (BOM, gerbers, renders, README summary) are rebuilt from the merged "
+                         "design at your next commit, or with Generate Project Files.")
+        wx.MessageBox("\n".join(lines), "Merge Complete")
+        return True
+
+    def _regen_flag_path(self):
+        """Marks that a merge left generated outputs to rebuild. Kept inside
+        .git so it is never committed."""
+        git_dir = self._git(["rev-parse", "--git-dir"]).stdout.strip()
+        return os.path.join(self.project_dir, git_dir, "gcc_regenerate_outputs")
 
     def _create_backup_snapshot(self):
         """Saves the FULL current working state — committed history plus any
@@ -1252,6 +1329,16 @@ class CommandCenterDialog(wx.Dialog):
             if progress:
                 progress(msg)
 
+        # A merge resolved generated outputs without rebuilding them: rebuild
+        # everything once, whatever the change check says.
+        regen_flag = self._regen_flag_path() if os.path.isdir(os.path.join(self.project_dir, ".git")) else None
+        if regen_flag and os.path.exists(regen_flag):
+            force = True
+            try:
+                os.remove(regen_flag)
+            except OSError:
+                pass
+
         pcb_files = project_files(self.project_dir, ".kicad_pcb")
         pcb_file = pcb_files[0] if pcb_files else None
 
@@ -1335,9 +1422,9 @@ class CommandCenterDialog(wx.Dialog):
                     gerber_zip = os.path.join(self.project_dir, "production", "gerbers.zip")
                     if force or pcb_updated or not os.path.exists(gerber_zip):
                         step("Generating gerbers...")
-                        board = pcbnew.GetBoard()
-                        if board:
-                            JLCPCBExporter(board).generate_zip(self.project_dir, zip_filename="gerbers")
+                        # From the saved file, like every other output: the
+                        # zip must match the committed board.
+                        generate_gerber_zip(pcb_file, self.project_dir, zip_filename="gerbers")
                     else:
                         print("GitHub Command Center: PCB unchanged and gerbers present - skipping gerber generation.")
             except Exception as e:
@@ -1483,8 +1570,57 @@ class CommandCenterDialog(wx.Dialog):
             self._run_bundle()
         self.update_git_status()
 
+    @staticmethod
+    def _lock_path(sheet):
+        return os.path.join(os.path.dirname(sheet), '~' + os.path.basename(sheet) + '.lck')
+
+    @classmethod
+    def _lock_owner(cls, sheet):
+        """'user on host' from a KiCad lock file, when it says."""
+        try:
+            with open(cls._lock_path(sheet), encoding='utf-8') as f:
+                info = json.load(f)
+            return f"locked by {info.get('username', '?')} on {info.get('hostname', '?')}"
+        except Exception:
+            return "lock file present"
+
     def on_bundle_libraries(self, event):
         self._run_bundle()
+
+    def _wait_for_schematics_closed(self, bundler):
+        """While the Schematic Editor has project sheets open, shows a notice
+        that doesn't block KiCad and continues as soon as it's closed.
+        Returns (closed, had_to_wait)."""
+        locked = bundler.locked_schematics()
+        if not locked:
+            return True, False
+
+        def remove_stale_locks():
+            # KiCad crashed, or a lock file was synced or committed from
+            # another computer: nothing will ever clear it.
+            current = bundler.locked_schematics()
+            owners = "\n".join(f"  {os.path.basename(p)}: {self._lock_owner(p)}" for p in current)
+            if wx.MessageBox("Remove these lock files?\n" + owners + "\n\n"
+                             "Only do this if no Schematic Editor has the sheets open; otherwise it "
+                             "could overwrite the bundled changes when it saves.",
+                             "Bundle Libraries", wx.YES_NO | wx.NO_DEFAULT | wx.ICON_WARNING) != wx.YES:
+                return None
+            for p in current:
+                try:
+                    os.remove(self._lock_path(p))
+                except OSError as e:
+                    wx.MessageBox(f"Could not remove the lock file:\n{e}", "Bundle Libraries", wx.ICON_ERROR)
+                    return None
+            return None  # keep waiting; finishes if nothing is locked any more
+
+        sheets = "\n  ".join(os.path.basename(p) for p in locked)
+        closed = wait_until_done(
+            self, "Bundle Libraries",
+            f"Close the Schematic Editor to continue (it has these sheets open):\n  {sheets}\n\n"
+            "Bundling continues automatically once it is closed.",
+            lambda: bool(bundler.locked_schematics()),
+            extra_button=("Not Open? Remove Lock Files...", remove_stale_locks))
+        return closed, True
 
     def _run_bundle(self, on_commit=False):
         """Copies non-stock symbols/footprints/3D models into <project>/libs and
@@ -1492,7 +1628,11 @@ class CommandCenterDialog(wx.Dialog):
 
         With on_commit, this is the check made before committing a bundled
         project: the dialog only appears when parts were added from outside
-        the project library since the last bundle."""
+        the project library since the last bundle.
+
+        The Schematic Editor must be closed before the preview is built: the
+        schematics are read from disk, and saving them on close would make an
+        earlier preview stale."""
         board = pcbnew.GetBoard()
         cfg = self._bundle_settings()
         state = {}
@@ -1501,19 +1641,30 @@ class CommandCenterDialog(wx.Dialog):
             state['bundler'] = ProjectBundler(self.project_dir, board, include_stock=include_stock)
             return state['bundler'].scan()
 
-        wx.BeginBusyCursor()
-        try:
-            plan = rescan(cfg.get('include_stock', False))
-        except Exception as e:
-            if wx.IsBusy(): wx.EndBusyCursor()
-            if not on_commit:
-                wx.MessageBox(f"Could not scan the project libraries:\n{e}", "Bundle Libraries", wx.ICON_ERROR)
-            else:
-                print(f"GitHub Command Center: bundle check skipped: {e}")
+        def scan_or_report():
+            wx.BeginBusyCursor()
+            try:
+                return rescan(cfg.get('include_stock', False))
+            except Exception as e:
+                if not on_commit:
+                    wx.MessageBox(f"Could not scan the project libraries:\n{e}", "Bundle Libraries", wx.ICON_ERROR)
+                else:
+                    print(f"GitHub Command Center: bundle check skipped: {e}")
+                return None
+            finally:
+                if wx.IsBusy(): wx.EndBusyCursor()
+
+        plan = scan_or_report()
+        if plan is None or (on_commit and plan.is_empty()):
             return
-        if wx.IsBusy(): wx.EndBusyCursor()
-        if on_commit and plan.is_empty():
+        closed, waited = self._wait_for_schematics_closed(state['bundler'])
+        if not closed:
             return
+        if waited:
+            # The sheets may have been saved on close: preview what's on disk now.
+            plan = scan_or_report()
+            if plan is None or (on_commit and plan.is_empty()):
+                return
 
         extra = None
         if on_commit:
@@ -1529,24 +1680,14 @@ class CommandCenterDialog(wx.Dialog):
             return
 
         bundler = state['bundler']
-        locked = bundler.locked_schematics()
-        while locked:
-            sheets = "\n  ".join(os.path.basename(p) for p in locked)
-            if wx.MessageBox(f"Close the Schematic Editor first (it has these sheets open):\n  {sheets}\n\n"
-                             "Click OK once it is closed.", "Bundle Libraries",
-                             wx.OK | wx.CANCEL | wx.ICON_WARNING) != wx.OK:
-                return
-            locked = bundler.locked_schematics()
-
         wx.BeginBusyCursor()
         try:
             result = bundler.apply(plan, progress=self._set_status)
         except Exception as e:
             if wx.IsBusy(): wx.EndBusyCursor()
             self._set_status("Bundle failed.")
-            backup_dir = os.path.join(bundler.project_dir, ".bundle_backup")
-            wx.MessageBox(f"Bundling failed:\n{e}\n\nOriginal files were backed up to {backup_dir} "
-                          "before any change.", "Bundle Libraries", wx.ICON_ERROR)
+            wx.MessageBox(f"Bundling failed, and the project was put back the way it was:\n\n{e}",
+                          "Bundle Libraries", wx.ICON_ERROR)
             return
         if wx.IsBusy(): wx.EndBusyCursor()
         pcbnew.Refresh()
@@ -1562,7 +1703,9 @@ class CommandCenterDialog(wx.Dialog):
             "the board has been saved.\n\n"
             "Next steps:\n"
             "  1. Close and reopen the project so KiCad loads the new project library tables.\n"
-            "  2. Commit the libs/ folder, sym-lib-table and fp-lib-table with the project." + extra,
+            "  2. Commit the libs/ folder, sym-lib-table and fp-lib-table with the project.\n\n"
+            "Undo (Ctrl+Z) in the PCB editor doesn't cover the bundle: undoing an earlier edit can bring back "
+            "the old library links. The next commit offers to bundle them again." + extra,
             "Bundle Complete", wx.ICON_INFORMATION)
         self.update_git_status()
 
@@ -1797,9 +1940,20 @@ class CommandCenterDialog(wx.Dialog):
         
         if success:
             wx.MessageBox(message, "Success")
+        elif any(k in message for k in ("[rejected]", "fetch first", "non-fast-forward")):
+            dlg = wx.MessageDialog(
+                self, "The server has commits you don't have yet, so nothing was pushed.\n\n"
+                "Pull and merge them now (you choose per file where both sides changed the design), "
+                "then push again?", "Push", wx.YES_NO | wx.ICON_QUESTION)
+            dlg.SetYesNoLabels("Pull, Merge and Push", "Cancel")
+            go = dlg.ShowModal() == wx.ID_YES
+            dlg.Destroy()
+            if go and self._pull():
+                self.on_push(None)
+                return
         else:
             wx.MessageBox(message, "Error", wx.ICON_ERROR)
-            
+
         self.update_git_status()
 
     def on_open_remote(self, event):
