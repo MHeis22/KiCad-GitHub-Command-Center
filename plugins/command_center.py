@@ -67,7 +67,8 @@ def _make_action_button(parent, label, light=None, dark=None, size=(-1, 40)):
 from .utils import (CREATE_NO_WINDOW, git_network_kwargs, project_files,
                     load_effective_settings, save_effective_settings,
                     get_last_target, save_last_target, load_project_settings, save_project_settings,
-                    get_installed_version, fetch_json, project_settings_problem)
+                    get_installed_version, fetch_json, project_settings_problem,
+                    get_bundle_ack, save_bundle_ack)
 from .ui_dialogs import SettingsDialog, CommitDialog, BundlePreviewDialog, wait_until_done
 from .merge_dialog import ConflictDialog, project_sheet_locks
 from .merge_resolver import MergeResolver, DuplicateReferences, MergeCheckFailed, MINE
@@ -1622,6 +1623,17 @@ class CommandCenterDialog(wx.Dialog):
             extra_button=("Not Open? Remove Lock Files...", remove_stale_locks))
         return closed, True
 
+    def _bundle_worth_showing(self, plan):
+        """Before a commit: show the bundle dialog when there is something to
+        bundle, when a part this user added can't be bundled, or when parts
+        added by teammates can't be bundled and this user hasn't seen exactly
+        that set yet. A part only a teammate can bundle isn't raised on every
+        commit; it is raised on the teammate's computer as something to bundle."""
+        if not plan.is_empty() or any(u['mine'] for u in plan.unresolved):
+            return True
+        key = plan.unresolved_key()
+        return bool(key) and key != get_bundle_ack(self.project_dir)
+
     def _run_bundle(self, on_commit=False):
         """Copies non-stock symbols/footprints/3D models into <project>/libs and
         relinks the schematics (on disk) and the open board (in memory).
@@ -1638,7 +1650,8 @@ class CommandCenterDialog(wx.Dialog):
         state = {}
 
         def rescan(include_stock):
-            state['bundler'] = ProjectBundler(self.project_dir, board, include_stock=include_stock)
+            state['bundler'] = ProjectBundler(self.project_dir, board, include_stock=include_stock,
+                                              git_cmd=self.git_cmd)
             return state['bundler'].scan()
 
         def scan_or_report():
@@ -1655,7 +1668,7 @@ class CommandCenterDialog(wx.Dialog):
                 if wx.IsBusy(): wx.EndBusyCursor()
 
         plan = scan_or_report()
-        if plan is None or (on_commit and plan.is_empty()):
+        if plan is None or (on_commit and not self._bundle_worth_showing(plan)):
             return
         closed, waited = self._wait_for_schematics_closed(state['bundler'])
         if not closed:
@@ -1663,19 +1676,25 @@ class CommandCenterDialog(wx.Dialog):
         if waited:
             # The sheets may have been saved on close: preview what's on disk now.
             plan = scan_or_report()
-            if plan is None or (on_commit and plan.is_empty()):
+            if plan is None or (on_commit and not self._bundle_worth_showing(plan)):
                 return
 
         extra = None
-        if on_commit:
+        if on_commit and not plan.is_empty():
             extra = ("This project keeps its libraries bundled, but some parts were added from outside the\n"
                      "project library since the last bundle. Bundle them now, or Cancel to commit without them.")
+        elif on_commit:
+            extra = ("Some parts this project uses were never bundled, and their libraries aren't on this\n"
+                     "computer. The list shows who added them; only they can bundle them. Close to commit anyway.")
         dlg = BundlePreviewDialog(self, plan, rescan, include_stock=cfg.get('include_stock', False),
                                   intro_extra=extra)
         ok = dlg.ShowModal() == wx.ID_OK
         plan = dlg.plan
         include_stock = dlg.include_stock()
         dlg.Destroy()
+        # Seen either way: parts only teammates can bundle aren't raised again
+        # until that set changes.
+        save_bundle_ack(self.project_dir, plan.unresolved_key())
         if not ok:
             return
 
@@ -1695,7 +1714,14 @@ class CommandCenterDialog(wx.Dialog):
 
         self._save_bundle_settings(True, include_stock)
 
-        extra = ("\n\nWarnings:\n" + "\n".join(plan.warnings)) if plan.warnings else ""
+        extra = ""
+        if plan.unresolved:
+            extra += ("\n\nPartly bundled: these parts aren't on this computer, so only the person who added "
+                      "them can bundle them:\n" +
+                      "\n".join(f"  {who}: " + ", ".join(f"{u['kind'].lower()} {u['item']}" for u in items)
+                                for who, items in plan.unresolved_by_person()))
+        if plan.warnings:
+            extra += "\n\nWarnings:\n" + "\n".join(plan.warnings)
         wx.MessageBox(
             f"Bundled {result['symbols']} symbols, {result['footprints']} footprints and "
             f"{result['models']} 3D models into /libs.\n"

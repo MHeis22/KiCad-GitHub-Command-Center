@@ -531,7 +531,8 @@ class BundlePreviewDialog(wx.Dialog):
         btn_sizer = wx.StdDialogButtonSizer()
         self.btn_ok = wx.Button(self, wx.ID_OK, label="Bundle")
         btn_sizer.AddButton(self.btn_ok)
-        btn_sizer.AddButton(wx.Button(self, wx.ID_CANCEL))
+        self.btn_cancel = wx.Button(self, wx.ID_CANCEL)
+        btn_sizer.AddButton(self.btn_cancel)
         btn_sizer.Realize()
         vbox.Add(btn_sizer, flag=wx.ALIGN_RIGHT | wx.BOTTOM | wx.RIGHT, border=10)
 
@@ -552,6 +553,10 @@ class BundlePreviewDialog(wx.Dialog):
             rows.append(("3D model", os.path.basename(i['src']), f"libs/3dmodels/{i['dest_name']}"))
         for old, new in sorted(p.field_remaps.items()):
             rows.append(("Fp. link", old, f"{new}  (already bundled)"))
+        for u in p.unresolved:
+            who = p.person(u)
+            rows.append((f"Missing {u['kind'].lower()}", u['item'],
+                         "you added it; library missing here" if who == "you" else f"only {who} can bundle it"))
         for r in rows:
             idx = self.list.InsertItem(self.list.GetItemCount(), r[0])
             self.list.SetItem(idx, 1, r[1])
@@ -564,11 +569,18 @@ class BundlePreviewDialog(wx.Dialog):
         if stock['symbols'] or stock['footprints']:
             text += f"  Stock parts left linked to KiCad libraries: {stock['symbols']} symbols, {stock['footprints']} footprints."
         if p.is_empty():
-            text = "Nothing to bundle: every part already comes from a stock or project library."
+            text = ("Nothing this computer can bundle." if p.unresolved else
+                    "Nothing to bundle: every part already comes from a stock or project library.")
+        if p.unresolved:
+            people = ", ".join(f"{who} ({len(items)})" for who, items in p.unresolved_by_person())
+            text += (f"  Partial bundle: {len(p.unresolved)} part(s) aren't on this computer and can only be "
+                     f"bundled where they were added — {people}.")
         self.summary.SetLabel(text)
         self.summary.Wrap(680)
-        self.warn.SetValue("\n".join(p.warnings) if p.warnings else "No warnings.")
+        lines = p.report_lines()
+        self.warn.SetValue("\n\n".join(lines) if lines else "No warnings.")
         self.btn_ok.Enable(not p.is_empty())
+        self.btn_cancel.SetLabel("Close" if p.is_empty() else "Cancel")
         self.Layout()
 
     def on_stock_toggle(self, event):

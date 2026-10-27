@@ -161,13 +161,17 @@ def save_project_settings(project_dir, settings):
 # How a person works, rather than what the project produces: these stay on
 # this computer. Every other setting is stored with the project.
 PERSONAL_KEYS = ('include_kicad_version', 'silent_pull')
+# Per-project bookkeeping kept on this computer, managed by their own helpers
+# (get/save_last_target, get/save_bundle_ack): never part of the settings dict.
+BOOKKEEPING_KEYS = ('last_targets', 'bundle_acks')
 
 def load_effective_settings(project_dir):
     """Settings for this project: the project's own values over this
     computer's. A project that was never configured starts from the values
     last saved in any project."""
     settings = load_settings()
-    settings.pop('last_targets', None)  # bookkeeping, managed by get/save_last_target
+    for k in BOOKKEEPING_KEYS:
+        settings.pop(k, None)
     project = load_project_settings(project_dir).get('settings') or {}
     settings.update({k: v for k, v in project.items() if k not in PERSONAL_KEYS})
     return settings
@@ -176,10 +180,10 @@ def save_effective_settings(project_dir, settings):
     """Personal keys go to this computer; the rest to the project (and to this
     computer too, as the starting point for unconfigured projects)."""
     glob_settings = load_settings()
-    glob_settings.update({k: v for k, v in settings.items() if k != 'last_targets'})
+    glob_settings.update({k: v for k, v in settings.items() if k not in BOOKKEEPING_KEYS})
     save_settings(glob_settings)
     proj = load_project_settings(project_dir)
-    proj['settings'] = {k: v for k, v in settings.items() if k not in PERSONAL_KEYS and k != 'last_targets'}
+    proj['settings'] = {k: v for k, v in settings.items() if k not in PERSONAL_KEYS and k not in BOOKKEEPING_KEYS}
     save_project_settings(project_dir, proj)
 
 def _project_key(project_dir):
@@ -200,6 +204,17 @@ def save_last_target(project_dir, target):
     if 'last_target' in proj:  # older versions kept it in the committed project file
         del proj['last_target']
         save_project_settings(project_dir, proj)
+
+def get_bundle_ack(project_dir):
+    """The parts only teammates can bundle that this user was last told about
+    for this project (BundlePlan.unresolved_key()), or ''."""
+    return (load_settings().get('bundle_acks') or {}).get(_project_key(project_dir), '')
+
+def save_bundle_ack(project_dir, key):
+    """Kept on this computer: who has been told is personal, not project data."""
+    settings = load_settings()
+    settings.setdefault('bundle_acks', {})[_project_key(project_dir)] = key
+    save_settings(settings)
 
 def save_settings(settings):
     """Saves global settings to the user's home directory."""

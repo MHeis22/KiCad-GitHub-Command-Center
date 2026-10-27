@@ -36,6 +36,9 @@ _VAR_RE = re.compile(r'\$\{([^}]+)\}|\$\(([^)]+)\)')
 _TOK = r'(?:"((?:[^"\\]|\\.)*)"|([^\s()"]+))'
 _LIB_START_RE = re.compile(r'\(lib\s')
 _LIB_FIELD_RE = {k: re.compile(r'\(' + k + r'\s+' + _TOK + r'\s*\)') for k in ('name', 'type', 'uri')}
+# (model "path" ...), or (model path ...) as some vendor exporters write it.
+_MODEL_RE = re.compile(r'\(model\s+' + _TOK)
+_FP_FIELD_RE = re.compile(r'\(property\s+"Footprint"\s+"((?:[^"\\]|\\.)*)"')
 _SCH_VERSION_RE = re.compile(r'\(version\s+(\d+)\)')
 _DEFAULT_SYM_LIB_VERSION = 20241209
 
@@ -232,18 +235,162 @@ class BundlePlan:
         # library is gone but whose footprint is already in the project library.
         self.field_remaps = {}
         self.warnings = []
+        # Parts the design uses that this computer can't bundle (library or
+        # file missing here). Each: {'kind', 'item', 'reason', 'needle', 'paths',
+        # 'added_by', 'mine'} — added_by/mine are filled in from git history.
+        self.unresolved = []
         self.skipped_stock = {'symbols': 0, 'footprints': 0}
 
     def is_empty(self):
+        """Nothing this computer can bundle. Unresolved parts don't count:
+        they are reported, not bundled."""
         return not (self.symbols or self.footprints or self.models or self.field_remaps)
+
+    def unresolve(self, kind, item, reason, needle, paths):
+        if any(u['kind'] == kind and u['item'] == item for u in self.unresolved):
+            return
+        self.unresolved.append({'kind': kind, 'item': item, 'reason': reason, 'needle': needle,
+                                'paths': paths, 'added_by': None, 'mine': False})
+
+    @staticmethod
+    def person(u):
+        a = u['added_by']
+        if u['mine']:
+            return "you"
+        if not a:
+            return "unknown (not found in git history)"
+        return a['first']['name'] or a['first']['email'] or "unknown"
+
+    def unresolved_by_person(self):
+        """[(person, [items])], the current user first."""
+        groups = {}
+        for u in self.unresolved:
+            groups.setdefault(self.person(u), []).append(u)
+        return sorted(groups.items(), key=lambda kv: (kv[0] != "you", kv[0].lower()))
+
+    def unresolved_key(self):
+        """Identifies the set of parts only teammates can bundle, so the user
+        is told about each new set once instead of on every commit."""
+        return "\n".join(sorted(f"{u['kind']}|{u['item']}" for u in self.unresolved if not u['mine']))
+
+    def unresolved_line(self, u):
+        line = f"{u['kind']} '{u['item']}': {u['reason']}."
+        a = u['added_by']
+        if not a:
+            return line
+        first, latest = a['first'], a['latest']
+        if first['commit'] is None:
+            return line + " You added it and haven't committed it yet; check its library or file is on this computer."
+        when = f"{first['commit'][:7]} ({first['date']})"
+        if u['mine']:
+            line += f" You added it in {when}, but that library or file isn't on this computer any more."
+        else:
+            who = self.person(u)
+            line += (f" {who} added it in {when} without bundling it, so only {who}'s computer is known to have it:"
+                     f" ask {who} to run Bundle Libraries and commit the result.")
+        if latest:
+            again = "you" if latest['mine'] else (latest['name'] or latest['email'])
+            when = "in uncommitted changes" if latest['commit'] is None else f"in {latest['commit'][:7]} ({latest['date']})"
+            line += f" It was added again by {again} {when}."
+        return line
+
+    def report_lines(self):
+        return [self.unresolved_line(u) for u in self.unresolved] + self.warnings
+
+
+class PartHistory:
+    """Who put a part reference into the project, read from git history: the
+    commit that first added it and, if it was added again later (e.g. relinked
+    to a personal library after it had been bundled), the latest one.
+    Without git, or for a reference that was never committed, it says so."""
+
+    def __init__(self, project_dir, git_cmd=None):
+        self.project_dir = project_dir
+        self.git_cmd = git_cmd or ("git.exe" if os.name == "nt" else "git")
+        self._cache = {}
+        self._me = None
+        self._has_head = None
+
+    def _git(self, *args):
+        try:
+            res = subprocess.run([self.git_cmd, "-c", "core.quotePath=false", "-C", self.project_dir] + list(args),
+                                 capture_output=True, text=True, encoding='utf-8', errors='replace',
+                                 timeout=30, creationflags=CREATE_NO_WINDOW)
+            return res.returncode, res.stdout
+        except Exception:
+            return -1, ''
+
+    def available(self):
+        if self._has_head is None:
+            self._has_head = self._git('rev-parse', '--verify', '-q', 'HEAD')[0] == 0
+        return self._has_head
+
+    def me(self):
+        if self._me is None:
+            self._me = tuple(self._git('config', key)[1].strip() for key in ('user.name', 'user.email'))
+        return self._me
+
+    def is_me(self, name, email):
+        my_name, my_email = self.me()
+        if email and my_email:
+            return email.lower() == my_email.lower()
+        return bool(name and my_name and name.lower() == my_name.lower())
+
+    def _count(self, rev, needle, paths):
+        """Occurrences of `needle` in `paths` at `rev` (0 if rev doesn't exist)."""
+        rc, out = self._git('grep', '-c', '-F', '-e', needle, rev, '--', *paths)
+        total = 0
+        for line in out.splitlines():
+            n = line.rsplit(':', 1)[-1]
+            if n.isdigit():
+                total += int(n)
+        return total
+
+    def _uncommitted(self):
+        name, email = self.me()
+        return {'name': name, 'email': email, 'commit': None, 'date': None, 'mine': True}
+
+    def added_by(self, needle, paths):
+        """{'first': who, 'latest': who or None} or None when unknown. `who` is
+        {'name', 'email', 'commit', 'date', 'mine'}; commit None = not committed."""
+        key = (needle, tuple(paths))
+        if key in self._cache:
+            return self._cache[key]
+        result = None
+        if paths and self.available():
+            # -S lists the commits that changed how often the text occurs;
+            # those that raised the count are the ones that added it.
+            rc, out = self._git('log', '-S', needle, '--format=%H%x1f%an%x1f%ae%x1f%ad', '--date=short',
+                                '--', *paths)
+            added = []
+            for line in out.splitlines():
+                parts = line.split('\x1f')
+                if len(parts) != 4:
+                    continue
+                sha, name, email, date = parts
+                if self._count(sha, needle, paths) > self._count(sha + '^', needle, paths):
+                    added.append({'name': name, 'email': email, 'commit': sha, 'date': date,
+                                  'mine': self.is_me(name, email)})
+            first = added[-1] if added else None
+            latest = added[0] if len(added) > 1 else None
+            if self._count('HEAD', needle, paths) == 0:
+                # Only in the working tree: added since the last commit.
+                latest = self._uncommitted()
+                if first is None:
+                    first, latest = latest, None
+            if first:
+                result = {'first': first, 'latest': latest}
+        self._cache[key] = result
+        return result
 
 
 class ProjectBundler:
 
-    def __init__(self, project_dir, board=None, include_stock=False):
+    def __init__(self, project_dir, board=None, include_stock=False, git_cmd=None):
         self.project_dir = os.path.abspath(project_dir)
         self.board = board
         self.include_stock = include_stock
+        self.history = PartHistory(self.project_dir, git_cmd)
 
         self.pcb_file = board.GetFileName() if board is not None else None
         if not self.pcb_file:
@@ -403,6 +550,17 @@ class ProjectBundler:
                 return f"${{{k}}}/{lib}{suffix}"
         return None
 
+    def _lib_file_missing(self, raw):
+        """True for a custom or project-folder library/model path that doesn't
+        exist here. Stock paths and embedded files are never 'missing'."""
+        if raw.startswith('kicad-embed://') or self._classify(raw) == 'stock':
+            return False
+        path = self._expand(raw)
+        return not path or not os.path.exists(path)
+
+    def _rel(self, path):
+        return os.path.relpath(path, self.project_dir).replace(os.sep, '/')
+
     def _under(self, path, root):
         try:
             return os.path.commonpath([os.path.normcase(path), os.path.normcase(root)]) == os.path.normcase(root)
@@ -477,29 +635,80 @@ class ProjectBundler:
                 v = _unq(m.group(1) if m.group(1) is not None else m.group(2))
                 if ':' in v:
                     fp_fields.add(v)
+        # Bundled symbols keep the Footprint field they were bundled with. If
+        # that footprint wasn't bundled at the time, it still names the old
+        # library and must be relinked once the footprint is in the project.
+        fp_fields |= self._bundled_symbol_fp_fields(lib_ids)
+        self._sch_rel = [self._rel(p) for p in sch_files]
 
         for p in self.outside_sheets:
             plan.warnings.append(f"Sheet '{p}' is outside the project folder and is left unchanged; "
                                  f"its parts are not bundled.")
         self._scan_symbols(plan, lib_ids, cache)
         board_fps = self._scan_footprints(plan, fp_fields)
-        self._scan_models(plan, board_fps)
+        used_bundled = {name for lib, name in (v.split(':', 1) for v in fp_fields) if lib == self.nickname}
+        self._scan_models(plan, board_fps, used_bundled)
+        self._attribute(plan)
         return plan
+
+    def _bundled_symbol_fp_fields(self, lib_ids):
+        """'lib:name' Footprint fields of the bundled symbols the design uses."""
+        used = {lid.split(':', 1)[1] for lid in lib_ids if lid.split(':', 1)[0] == self.nickname}
+        if not used or not os.path.isfile(self.sym_lib_path):
+            return set()
+        text = _read(self.sym_lib_path)
+        fields = set()
+        for n, s, e in _top_level_symbols(text, 1):
+            if n in used:
+                fields.update(v for v in (_unq(m.group(1)) for m in _FP_FIELD_RE.finditer(text[s:e])) if ':' in v)
+        return fields
+
+    def _attribute(self, plan):
+        """Finds who added each part this computer can't bundle. A part added
+        by someone else came from their libraries: only their computer can
+        bundle it fully, and the report says so instead of blaming this one."""
+        for u in plan.unresolved:
+            u['added_by'] = self.history.added_by(u['needle'], u['paths'])
+            u['mine'] = bool(u['added_by'] and u['added_by']['first']['mine'])
+        # A footprint taken from a same-named library on this computer may not
+        # be the part its author used.
+        for (lib, name), info in plan.footprints.items():
+            if info['origin'] != "library file" or info['exists']:
+                continue
+            a = self.history.added_by(f"{lib}:{name}", self._sch_rel)
+            if a and not a['first']['mine']:
+                plan.warnings.append(
+                    f"Footprint '{lib}:{name}' was added by {a['first']['name']} ({a['first']['commit'][:7]}), "
+                    f"but is being bundled from your own library '{lib}'. Check it is the same footprint.")
 
     def _wants(self, lib, table, plan, kind):
         """True if items from this library nickname should be bundled."""
         raw = table.get(lib)
         if lib == self.nickname and (raw is None or self._classify(raw) == 'project'):
             return False  # already bundled
-        if raw is None or (self._classify(raw) == 'custom' and not os.path.exists(self._expand(raw) or '')):
-            # Missing, or listed with a path that doesn't exist on this machine
-            # (e.g. a table carried over from another computer).
+        if raw is not None and self._lib_file_missing(raw):
+            # Listed with a path that doesn't exist on this machine: a table
+            # carried over from another computer, or a project-folder library
+            # that was never committed. Neither counts as bundled.
+            stock = self._stock_lib_uri(lib, kind)
+            if stock is not None:
+                raw = table[lib] = stock
+            else:
+                if kind == "Symbol":
+                    plan.warnings.append(f"Symbol library '{lib}' is listed at {raw}, which doesn't exist; "
+                                         f"its parts are taken from the copies stored in the design.")
+                del table[lib]
+                return True
+        if raw is None:
             stock = self._stock_lib_uri(lib, kind)
             if stock is not None:
                 raw = table[lib] = stock
         if raw is None:
-            plan.warnings.append(f"{kind} library '{lib}' is not in any library table; "
-                                 f"its parts are taken from the copies stored in the design where possible.")
+            # Footprints have no copy in the schematic: each missing one is
+            # reported on its own (with who added it) instead.
+            if kind == "Symbol":
+                plan.warnings.append(f"Symbol library '{lib}' is not in any library table; "
+                                     f"its parts are taken from the copies stored in the design.")
             return True
         cls = self._classify(raw)
         if cls == 'project':
@@ -569,7 +778,8 @@ class ProjectBundler:
             if block is None:
                 block, origin = self._symbol_from_library(lib, name), "library file"
             if block is None:
-                plan.warnings.append(f"Symbol '{lid}' not found in the schematic cache or its library; skipped.")
+                plan.unresolve("Symbol", lid, "not in the schematic's stored copies or in a library on this computer",
+                               needle=lid, paths=self._sch_rel)
                 continue
 
             new_name, _ = self._pick_name(name, lib, _sym_sig(block, lid), taken, "Symbol", plan, fold_case=False)
@@ -623,13 +833,15 @@ class ProjectBundler:
                 bundled = self._bundled_footprint_name(lib, name)
                 if bundled:
                     plan.field_remaps[f"{lib}:{name}"] = f"{self.nickname}:{bundled}"
-                elif name.lower() in taken:
-                    plan.warnings.append(
-                        f"Footprint field '{lib}:{name}': that library isn't on this computer. The project library "
-                        f"has a footprint '{taken[name.lower()][1]}', but it isn't known to be the same part, so the "
-                        f"field was left unchanged.")
-                else:
-                    plan.warnings.append(f"Footprint '{lib}:{name}' (schematic field) not found; skipped.")
+                    continue
+                why = (f"library '{lib}' on this computer has no footprint '{name}'"
+                       if lib_dir and os.path.isdir(lib_dir) else f"library '{lib}' isn't on this computer")
+                if name.lower() in taken:
+                    why += (f". The project library has a footprint '{taken[name.lower()][1]}', but it isn't known "
+                            f"to be the same part, so the link was left unchanged")
+                plan.unresolve("Footprint", f"{lib}:{name}", why, needle=f"{lib}:{name}",
+                               paths=self._sch_rel + ([self._rel(self.sym_lib_path)]
+                                                      if os.path.isfile(self.sym_lib_path) else []))
                 continue
             origin = "library file" if src else "board copy"
             # Read (or export) the footprint now: its content decides its name,
@@ -643,12 +855,6 @@ class ProjectBundler:
             new_name, exists = self._pick_name(name, lib, _fp_sig(text), taken, "Footprint", plan, fold_case=True)
             plan.footprints[(lib, name)] = {'new_name': new_name, 'src': src, 'origin': origin, 'text': text,
                                             'exists': exists, 'board_fp': refs.get((lib, name))}
-
-        # A missing library whose every part was resolved by a remap isn't worth a warning.
-        remapped_only = ({k.split(':', 1)[0] for k in plan.field_remaps}
-                         - {lib for lib, _ in plan.footprints})
-        plan.warnings = [w for w in plan.warnings
-                         if not any(w.startswith(f"Footprint library '{lib}' is not in any") for lib in remapped_only)]
         return board_fps
 
     def _load_sources(self):
@@ -674,15 +880,31 @@ class ProjectBundler:
                 sources[kind].setdefault(info['new_name'], f"{lib}:{name}")
         _write(self.sources_path, json.dumps(sources, indent=2, sort_keys=True) + "\n")
 
-    def _scan_models(self, plan, board_fps):
+    def _scan_models(self, plan, board_fps, used_bundled=()):
+        """Models of the board's footprints, of the footprints bundled now, and
+        of footprints bundled earlier that the design still uses: a footprint
+        bundled on a computer without its model keeps the original model path
+        until a computer that has the model bundles again."""
+        # (raw path, footprint item, files that show who added the footprint)
         raw_models = []
+        pcb_rel = [self._rel(self.pcb_file)] if self.pcb_file and os.path.isfile(self.pcb_file) else []
         for fp in board_fps:
+            fpid = fp.GetFPID()
+            item = f"{fpid.GetLibNickname()}:{fpid.GetLibItemName()}"
             for m in fp.Models():
-                raw_models.append(m.m_Filename)
-        for info in plan.footprints.values():
+                raw_models.append((m.m_Filename, item, pcb_rel))
+        for (lib, name), info in plan.footprints.items():
             if info['src']:
-                for m in re.finditer(r'\(model\s+"((?:[^"\\]|\\.)*)"', _read(info['src'])):
-                    raw_models.append(_unq(m.group(1)))
+                for m in _MODEL_RE.finditer(_read(info['src'])):
+                    raw_models.append((_tok(m), f"{lib}:{name}", self._sch_rel))
+        if os.path.isdir(self.fp_lib_path):
+            wanted_names = {n.lower() for n in used_bundled}
+            for f in sorted(os.listdir(self.fp_lib_path)):
+                stem = f[:-len('.kicad_mod')]
+                if f.endswith('.kicad_mod') and stem.lower() in wanted_names:
+                    path = os.path.join(self.fp_lib_path, f)
+                    for m in _MODEL_RE.finditer(_read(path)):
+                        raw_models.append((_tok(m), f"{self.nickname}:{stem}", [self._rel(path)]))
 
         dest_names = {}  # lower-case dest name -> content hash, seeded with models already bundled
         if os.path.isdir(self.models_dir):
@@ -692,14 +914,25 @@ class ProjectBundler:
                     dest_names[f.lower()] = _file_hash(path)
         wanted = ('custom', 'stock') if self.include_stock else ('custom',)
         missing = set()
-        for raw in raw_models:
-            if not raw or raw in plan.models or raw in missing or self._classify(raw) not in wanted:
+        for raw, item, paths in raw_models:
+            if not raw or raw in plan.models or raw in missing:
+                continue
+            cls = self._classify(raw)
+            if cls == 'project' and self._lib_file_missing(raw):
+                # Linked into the project but the file was never committed.
+                missing.add(raw)
+                plan.unresolve("3D model", os.path.basename(raw.replace('\\', '/')),
+                               f"footprint '{item}' links to {raw}, which is missing from the project",
+                               needle=raw, paths=paths)
+                continue
+            if cls not in wanted:
                 continue
             src = self._expand(raw)
             if not src or not os.path.isfile(src):
                 missing.add(raw)
-                plan.warnings.append(f"3D model not on this computer, left as is: {raw}. "
-                                     f"Bundle again on a computer that has it.")
+                plan.unresolve("3D model", os.path.basename(raw.replace('\\', '/')),
+                               f"footprint '{item}' uses {raw}, which isn't on this computer",
+                               needle=raw, paths=paths)
                 continue
             dest = os.path.basename(src)
             h = _file_hash(src)
@@ -772,15 +1005,17 @@ class ProjectBundler:
         fp_map = {f"{lib}:{name}": f"{self.nickname}:{i['new_name']}" for (lib, name), i in plan.footprints.items()}
         fp_map.update(plan.field_remaps)
 
-        if plan.symbols:
-            step("Writing symbol library...")
-            self._write_symbols(plan, fp_map)
-        elif plan.field_remaps and os.path.isfile(self.sym_lib_path):
-            # Symbols bundled earlier can carry the stale footprint links too.
+        if fp_map and os.path.isfile(self.sym_lib_path):
+            # Symbols bundled earlier still name their footprint's old library
+            # when that footprint is bundled only now (or was bundled
+            # separately); left as is, they no longer match the schematic's copy.
             text = _read(self.sym_lib_path)
             fixed = self._rewrite_fp_fields(text, fp_map)
             if fixed != text:
                 _write(self.sym_lib_path, fixed)
+        if plan.symbols:
+            step("Writing symbol library...")
+            self._write_symbols(plan, fp_map)
 
         step("Relinking schematics...")
         changed_sheets = self._relink_schematics(plan, fp_map)
@@ -880,9 +1115,9 @@ class ProjectBundler:
 
     def _rewrite_models(self, text, model_map):
         def sub(m):
-            raw = _unq(m.group(1))
+            raw = _tok(m)
             return '(model ' + _q(model_map[raw]) if raw in model_map else m.group(0)
-        return re.sub(r'\(model\s+"((?:[^"\\]|\\.)*)"', sub, text)
+        return _MODEL_RE.sub(sub, text)
 
     def _write_footprints(self, plan, model_map):
         """Writes the planned footprints. A footprint whose identical copy is
